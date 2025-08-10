@@ -157,8 +157,10 @@ class ClickerApp:
 
     def update_elapsed_time(self):
         if self.running and self.start_time:
-            elapsed_time = int(time.time() - self.start_time)  # 経過時間を整数に変更
-            self.elapsed_time_label.config(text=f"{elapsed_time}")  # 小数点以下を削除
+            elapsed_seconds = int(time.time() - self.start_time)
+            hours, remainder = divmod(elapsed_seconds, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            self.elapsed_time_label.config(text=f"{hours:02}:{minutes:02}:{seconds:02}")  # 時分秒形式に変更
             self.root.after(1000, self.update_elapsed_time)  # 1秒ごとに更新
 
     def select_area(self):
