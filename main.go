@@ -927,7 +927,7 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 	}
 	
 	// フォント読み込み（標準フォント）
-	fontPath := "C:\\Windows\\Fonts\\segoeui.ttf"
+	fontPath := "C:\\Windows\\Fonts\\BIZ-UDGothicR.ttc"
 	if _, err := os.Stat(fontPath); os.IsNotExist(err) {
 		fontPath = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 	}
@@ -941,7 +941,7 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 	}
 	
 	// モノスペースフォント読み込み（日時表示用）
-	monoFontPath := "C:\\Windows\\Fonts\\consola.ttf"
+	monoFontPath := "C:\\Users\\miwam\\AppData\\Local\\Microsoft\\Windows\\Fonts\\OCR-BK.otf"
 	if _, err := os.Stat(monoFontPath); os.IsNotExist(err) {
 		monoFontPath = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
 	}
@@ -959,7 +959,7 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 	c := freetype.NewContext()
 	c.SetDPI(72)
 	c.SetFont(monoFont)
-	c.SetFontSize(14)
+	c.SetFontSize(40)
 	c.SetSrc(image.NewUniform(textColor))
 	c.SetDst(img)
 	c.SetClip(img.Bounds())
