@@ -56,11 +56,17 @@ func main() {
 	verbose := flag.Bool("verbose", false, "詳細な人間向け出力を有効化します（--json時はstderrに出力）")
 	noHuman := flag.Bool("no-human", false, "人間向け出力を全て抑制します（--jsonと併用して純粋なJSONのみ出力する）")
 	annotate := flag.Bool("annotate", false, "メタデータを画像に追加して出力します")
+	autoAnnotate := flag.Bool("auto-annotate", false, "複数ファイルが指定された場合は自動的にアノテーションを有効化します")
 	flag.Parse()
 
 	if flag.NArg() < 1 {
 		fmt.Println("画像ファイルをドラッグ＆ドロップしてください。")
 		return
+	}
+
+	// 複数ファイルかつ--auto-annotateフラグの場合は--annotateを有効化
+	if *autoAnnotate && flag.NArg() > 1 && !*annotate {
+		*annotate = true
 	}
 
 	// If JSON output is requested, collect or stream JSON-only output
