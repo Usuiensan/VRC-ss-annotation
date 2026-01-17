@@ -1636,73 +1636,81 @@ func addXMPToPNG(pngPath string, xmpData string) error {
 		return nil
 	}
 
-	// PNG ファイルを読み込み
 	data, err := os.ReadFile(pngPath)
 	if err != nil {
 		return err
 	}
-
-	// PNG シグネチャ確認
 	if len(data) < 8 {
 		return errors.New("invalid PNG file")
 	}
 
-	// zTXt チャンク作成
-	keyword := "XML:com.adobe.xmp"
-	keywordBytes := []byte(keyword)
-	compFlag := byte(1) // 圧縮有効
+	// PNGチャンクをパースし、既存のzTXt(XMP)チャンクを除去
+	var out bytes.Buffer
+	out.Write(data[:8]) // PNG signature
 
-	// XMP データを zlib で圧縮
+	offset := 8
+	for offset < len(data) {
+		if offset+8 > len(data) {
+			break
+		}
+		clen := int(binary.BigEndian.Uint32(data[offset : offset+4]))
+		ctype := string(data[offset+4 : offset+8])
+		chunkEnd := offset + 8 + clen + 4
+		if chunkEnd > len(data) {
+			break
+		}
+		// zTXtかつXMP用キーワードならスキップ
+		if ctype == "zTXt" {
+			// キーワード抽出
+			kEnd := offset + 8
+			for ; kEnd < offset+8+clen && data[kEnd] != 0; kEnd++ {}
+			keyword := string(data[offset+8 : kEnd])
+			if keyword == "XML:com.adobe.xmp" {
+				offset = chunkEnd
+				continue
+			}
+		}
+		out.Write(data[offset:chunkEnd])
+		offset = chunkEnd
+	}
+
+	// zTXtチャンク作成（圧縮フラグ=0, 圧縮方式=0, PNG仕様準拠）
+	keyword := "XML:com.adobe.xmp"
+	var chunkBuf bytes.Buffer
+	chunkBuf.Write([]byte(keyword))
+	chunkBuf.WriteByte(0) // Null separator
+	chunkBuf.WriteByte(0) // Compression flag: 0=deflate
+	chunkBuf.WriteByte(0) // Compression method: 0=deflate
 	var compBuf bytes.Buffer
 	zw := zlib.NewWriter(&compBuf)
 	if _, err := zw.Write([]byte(xmpData)); err != nil {
 		return err
 	}
 	zw.Close()
-
-	// zTXt チャンク作成
-	var chunkBuf bytes.Buffer
-	chunkBuf.Write(keywordBytes)
-	chunkBuf.WriteByte(0) // Null separator
-	chunkBuf.WriteByte(compFlag)
-	chunkBuf.WriteByte(0) // Compression method (0 = deflate)
 	chunkBuf.Write(compBuf.Bytes())
-
 	chunkData := chunkBuf.Bytes()
 
-	// PNG ファイルを IEND の前に zTXt チャンクを挿入
-	// IEND チャンク（最後の 12 バイト）の位置を探す
-	pngData := make([]byte, len(data)+12+len(chunkData))
-	copy(pngData, data)
-
-	// 最後から IEND チャンク 12 バイト以前にチャンクを挿入
-	insertPos := len(data) - 12
-
-	// 新しいデータを構築
-	newData := make([]byte, 0, len(pngData)+12+len(chunkData))
-	newData = append(newData, data[:insertPos]...)
-
-	// zTXt チャンク追加
+	// IEND直前にzTXt挿入
+	outBytes := out.Bytes()
+	insertPos := len(outBytes) - 12
+	if insertPos < 8 {
+		return errors.New("invalid PNG structure for zTXt insert")
+	}
+	var final bytes.Buffer
+	final.Write(outBytes[:insertPos])
 	chunkLen := make([]byte, 4)
 	binary.BigEndian.PutUint32(chunkLen, uint32(len(chunkData)))
-	newData = append(newData, chunkLen...)
-	newData = append(newData, []byte("zTXt")...)
-	newData = append(newData, chunkData...)
-
-	// チャンク CRC 計算（PNG は IEEE 多項式を使う）
-	crcData := make([]byte, 0, 4+len(chunkData))
-	crcData = append(crcData, []byte("zTXt")...)
-	crcData = append(crcData, chunkData...)
+	final.Write(chunkLen)
+	final.Write([]byte("zTXt"))
+	final.Write(chunkData)
+	crcData := append([]byte("zTXt"), chunkData...)
 	crcVal := crc32.ChecksumIEEE(crcData)
 	crcBytes := make([]byte, 4)
 	binary.BigEndian.PutUint32(crcBytes, crcVal)
-	newData = append(newData, crcBytes...)
+	final.Write(crcBytes)
+	final.Write(outBytes[insertPos:])
 
-	// IEND チャンク追加
-	newData = append(newData, data[insertPos:]...)
-
-	// ファイルに書き込み
-	return os.WriteFile(pngPath, newData, 0644)
+	return os.WriteFile(pngPath, final.Bytes(), 0644)
 }
 
 // addXMPToWebP はデコード済みの WebP ファイルに XMP メタデータを追加
