@@ -16,4 +16,4 @@ main.exe --annotate %*
 REM 処理終了時に一瞬画面を表示（確認用）
 echo.
 echo 処理完了。このウィンドウを閉じてください...
-pause
+timeout /t 5 /nobreak >nul

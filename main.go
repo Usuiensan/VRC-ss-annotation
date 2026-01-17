@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +36,31 @@ import (
 )
 
 var logMutex sync.Mutex
+
+// コンフィグ: 撮影者プレースホルダー名（この値のとき撮影者セクションを省略）
+var placeholderAuthorName = "任意の名前"
+
+// annotate.config.json を読み込み、プレースホルダー名を設定
+func loadConfig() {
+	// 優先: annotate.config.json → 次点: config.json
+	candidates := []string{"annotate.config.json", "config.json"}
+	for _, p := range candidates {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		var cfg struct {
+			PlaceholderAuthorName string `json:"placeholderAuthorName"`
+		}
+		if json.Unmarshal(b, &cfg) == nil {
+			s := strings.TrimSpace(cfg.PlaceholderAuthorName)
+			if s != "" {
+				placeholderAuthorName = s
+			}
+		}
+		break
+	}
+}
 
 func appendLog(message string) {
 	logMutex.Lock()
@@ -55,6 +81,8 @@ func isPrintCameraResolutionOnly(img image.Image) bool {
 }
 
 func main() {
+	// コンフィグ読み込み
+	loadConfig()
 	// CLI flags
 	jsonOut := flag.Bool("json", false, "出力をJSONにします")       // --json
 	rawOut := flag.Bool("raw", false, "デバッグ用に生のメタデータを表示します") // --raw
@@ -65,6 +93,7 @@ func main() {
 	noHuman := flag.Bool("no-human", false, "人間向け出力を全て抑制します（--jsonと併用して純粋なJSONのみ出力する）")
 	annotate := flag.Bool("annotate", false, "メタデータを画像に追加して出力します")
 	autoAnnotate := flag.Bool("auto-annotate", false, "複数ファイルが指定された場合は自動的にアノテーションを有効化します")
+	threads := flag.Int("threads", runtime.NumCPU(), "並列処理するワーカー数（デフォルトはCPUコア数）")
 	flag.Parse()
 
 	if flag.NArg() < 1 {
@@ -73,6 +102,10 @@ func main() {
 	}
 
 	// 複数ファイルかつ--auto-annotateフラグの場合は--annotateを有効化
+	if !*jsonOut && !*rawOut && !*annotate {
+		*annotate = true
+	}
+	// 複数ファイルかつ--auto-annotateフラグの場合は--annotateを有効化（後方互換）
 	if *autoAnnotate && flag.NArg() > 1 && !*annotate {
 		*annotate = true
 	}
@@ -127,49 +160,63 @@ func main() {
 
 	// Non-JSON mode: print human-readable output per file
 	if *annotate {
-		for _, path := range flag.Args() {
-			meta, err := readVRChatExifPNG(path, true, false, false, false, false, true)
-			if err != nil {
-				msg := fmt.Sprintf("エラー (%s): %v", path, err)
-				fmt.Fprintln(os.Stderr, msg)
-				appendLog(msg)
-				continue
-			}
-			date, _ := meta["shootDate"].(string)
-			worldName, _ := meta["worldName"].(string)
-			worldID, _ := meta["worldID"].(string)
-			authorName, _ := meta["authorName"].(string)
-			authorID, _ := meta["authorID"].(string)
-			var worldURL string
-			if worldID == "" {
-				msg := fmt.Sprintf("警告 (%s): ワールドIDが見つかりません（日時のみ表示）", path)
-				fmt.Fprintln(os.Stderr, msg)
-				appendLog(msg)
-				worldURL = ""
-			} else {
-				worldURL = fmt.Sprintf("https://vrchat.com/home/world/%s", worldID)
-			}
-			// 2048x1440判定
-			imgFile, err := os.Open(path)
-			if err == nil {
-				img, _, err := image.Decode(imgFile)
-				imgFile.Close()
-				if err == nil && isPrintCameraResolutionOnly(img) {
-					msg := fmt.Sprintf("%s: 2048x1440画像のため撮影者・ワールド名・撮影日を記載しません", path)
-					fmt.Println(msg)
-					appendLog(msg)
-				}
-			}
-			if err := addMetadataToImage(path, date, worldName, authorName, authorID, worldURL); err != nil {
-				msg := fmt.Sprintf("画像処理エラー (%s): %v", path, err)
-				fmt.Fprintln(os.Stderr, msg)
-				appendLog(msg)
-				continue
-			}
-			msg := fmt.Sprintf("処理完了: %s", path)
-			fmt.Println(msg)
-			appendLog(msg)
+		paths := flag.Args()
+		if len(paths) == 0 {
+			fmt.Println("画像ファイルをドラッグ＆ドロップしてください。")
+			return
 		}
+		jobs := make(chan string)
+		var wg sync.WaitGroup
+		worker := func() {
+			defer wg.Done()
+			for path := range jobs {
+				meta, err := readVRChatExifPNG(path, true, false, false, false, false, true)
+				if err != nil {
+					msg := fmt.Sprintf("エラー (%s): %v", path, err)
+					fmt.Fprintln(os.Stderr, msg)
+					appendLog(msg)
+					continue
+				}
+				date, _ := meta["shootDate"].(string)
+				worldName, _ := meta["worldName"].(string)
+				worldID, _ := meta["worldID"].(string)
+				authorName, _ := meta["authorName"].(string)
+				authorID, _ := meta["authorID"].(string)
+				var worldURL string
+				if worldID == "" {
+					msg := fmt.Sprintf("警告 (%s): ワールドIDが見つかりません（日時のみ表示）", path)
+					fmt.Fprintln(os.Stderr, msg)
+					appendLog(msg)
+					worldURL = ""
+				} else {
+					worldURL = fmt.Sprintf("https://vrchat.com/home/world/%s", worldID)
+				}
+				if err := addMetadataToImage(path, date, worldName, authorName, authorID, worldURL); err != nil {
+					msg := fmt.Sprintf("画像処理エラー (%s): %v", path, err)
+					fmt.Fprintln(os.Stderr, msg)
+					appendLog(msg)
+					continue
+				}
+				msg := fmt.Sprintf("処理完了: %s", path)
+				fmt.Println(msg)
+				appendLog(msg)
+			}
+		}
+		// start workers
+		n := *threads
+		if n < 1 {
+			n = 1
+		}
+		wg.Add(n)
+		for i := 0; i < n; i++ {
+			go worker()
+		}
+		// feed jobs
+		for _, p := range paths {
+			jobs <- p
+		}
+		close(jobs)
+		wg.Wait()
 		return
 	}
 
@@ -745,7 +792,7 @@ func addMetadataToImage(imagePath string, date string, worldName string, authorN
 		outImg := image.NewRGBA(bounds)
 		draw.Draw(outImg, bounds, img, bounds.Min, draw.Src)
 
-		// QR生成とスケーリング（NearestNeighborで3倍、右から60px）
+		// QR生成とスケーリング（NearestNeighborで3倍、右から62px）
 		isDark := isDarkImage(img)
 		qrImg, err := generateRMQR(worldURL, isDark)
 		if err == nil {
@@ -753,7 +800,7 @@ func addMetadataToImage(imagePath string, date string, worldName string, authorN
 			scaleFactor := 3
 			scaledWidth := qrBounds.Dx() * scaleFactor
 			scaledHeight := qrBounds.Dy() * scaleFactor
-			qrX := width - scaledWidth - 60
+			qrX := width - scaledWidth - 62
 			if qrX < 0 {
 				qrX = 0
 			}
@@ -1207,20 +1254,27 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 
 	// ワールド情報がある場合のみアイコン＆テキスト描画
 	if worldName != "" && currentX < availableRight {
-		// アイコン2: カメラ（作成者）
-		if cameraIcon, err := loadSVGIcon("camera", colorHex, iconSize); err == nil {
-			iconRect := image.Rect(currentX, iconY, currentX+iconSize, iconY+iconSize)
-			draw.Draw(img, iconRect, cameraIcon, image.Point{}, draw.Over)
+		// 撮影者がコンフィグのプレースホルダー名の場合は撮影者セクションを省略
+		skipAuthor := false
+		if strings.TrimSpace(placeholderAuthorName) != "" {
+			skipAuthor = strings.TrimSpace(authorName) == strings.TrimSpace(placeholderAuthorName)
 		}
-		currentX += iconSize + iconSpacing
-		
-		// テキスト: 作成者名（可変幅）
-		authorText := fitText(mainFace, authorName, availableRight-currentX)
-		if authorText != "" {
-			c.SetFont(font)
-			pt := freetype.Pt(currentX, textBaseline)
-			c.DrawString(authorText, pt)
-			currentX += measureWidth(mainFace, authorText) + gapSize
+		if !skipAuthor {
+			// アイコン2: カメラ（作成者）
+			if cameraIcon, err := loadSVGIcon("camera", colorHex, iconSize); err == nil {
+				iconRect := image.Rect(currentX, iconY, currentX+iconSize, iconY+iconSize)
+				draw.Draw(img, iconRect, cameraIcon, image.Point{}, draw.Over)
+			}
+			currentX += iconSize + iconSpacing
+			
+			// テキスト: 作成者名（可変幅）
+			authorText := fitText(mainFace, authorName, availableRight-currentX)
+			if authorText != "" {
+				c.SetFont(font)
+				pt := freetype.Pt(currentX, textBaseline)
+				c.DrawString(authorText, pt)
+				currentX += measureWidth(mainFace, authorText) + gapSize
+			}
 		}
 	}
 
