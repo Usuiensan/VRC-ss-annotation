@@ -272,19 +272,117 @@ func extractWebPDimensionsAndFlags(data []byte) (int, int, bool, bool, error) {
 
 // プレースホルダー関数（後で実装）
 func extractExifFromPNG(data []byte) ([]byte, error) {
-	return nil, errors.New("not implemented")
+	if len(data) < 8 {
+		return nil, errors.New("not a valid PNG")
+	}
+
+	offset := 8 // skip PNG signature
+	for offset+8 <= len(data) {
+		length := int(binary.BigEndian.Uint32(data[offset : offset+4]))
+		chunkType := string(data[offset+4 : offset+8])
+		chunkDataStart := offset + 8
+		chunkDataEnd := chunkDataStart + length
+		chunkCRCEnd := chunkDataEnd + 4
+
+		if chunkDataEnd > len(data) || chunkCRCEnd > len(data) {
+			break
+		}
+
+		if chunkType == "eXIf" {
+			return data[chunkDataStart:chunkDataEnd], nil
+		}
+
+		offset = chunkCRCEnd
+	}
+
+	return nil, errors.New("eXIf chunk not found")
 }
 
 func extractExifFromWebP(data []byte) ([]byte, error) {
-	return nil, errors.New("not implemented")
+	if len(data) < 12 {
+		return nil, errors.New("not a valid WebP")
+	}
+	if string(data[0:4]) != "RIFF" || string(data[8:12]) != "WEBP" {
+		return nil, errors.New("not a valid WebP")
+	}
+	offset := 12
+	for offset+8 <= len(data) {
+		chunkID := string(data[offset : offset+4])
+		size := int(binary.LittleEndian.Uint32(data[offset+4 : offset+8]))
+		chunkDataStart := offset + 8
+		chunkDataEnd := chunkDataStart + size
+		if chunkDataEnd > len(data) {
+			break
+		}
+		if chunkID == "EXIF" {
+			return data[chunkDataStart:chunkDataEnd], nil
+		}
+		offset = chunkDataEnd
+		if size%2 == 1 {
+			offset++
+		}
+	}
+	return nil, errors.New("EXIF chunk not found")
 }
 
 func extractTextualMetadataFromPNG(data []byte) (string, error) {
-	return "", errors.New("not implemented")
+	if len(data) < 8 {
+		return "", errors.New("not a valid PNG")
+	}
+	offset := 8
+	for offset+8 <= len(data) {
+		length := int(binary.BigEndian.Uint32(data[offset : offset+4]))
+		chunkType := string(data[offset+4 : offset+8])
+		chunkDataStart := offset + 8
+		chunkDataEnd := chunkDataStart + length
+		chunkCRCEnd := chunkDataEnd + 4
+
+		if chunkDataEnd > len(data) || chunkCRCEnd > len(data) {
+			break
+		}
+
+		switch chunkType {
+		case "tEXt":
+			d := data[chunkDataStart:chunkDataEnd]
+			if i := bytes.IndexByte(d, 0); i != -1 {
+				return string(d[i+1:]), nil
+			}
+			return string(d), nil
+		case "iTXt", "zTXt":
+			// Other text formats - skip for now
+		}
+
+		offset = chunkCRCEnd
+	}
+
+	return "", errors.New("textual metadata not found")
 }
 
 func extractTextualMetadataFromWebP(data []byte) (string, error) {
-	return "", errors.New("not implemented")
+	if len(data) < 12 {
+		return "", errors.New("not a valid WebP")
+	}
+	if string(data[0:4]) != "RIFF" || string(data[8:12]) != "WEBP" {
+		return "", errors.New("not a valid WebP")
+	}
+	offset := 12
+	for offset+8 <= len(data) {
+		chunkID := string(data[offset : offset+4])
+		size := int(binary.LittleEndian.Uint32(data[offset+4 : offset+8]))
+		chunkDataStart := offset + 8
+		chunkDataEnd := chunkDataStart + size
+		if chunkDataEnd > len(data) {
+			break
+		}
+		if chunkID == "XMP " {
+			return string(data[chunkDataStart:chunkDataEnd]), nil
+		}
+		offset = chunkDataEnd
+		if size%2 == 1 {
+			offset++
+		}
+	}
+	return "", errors.New("XMP chunk not found")
 }
 
 func extractVRChatFromXMP(xmp string) (bool, string, string, string) {
