@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/zlib"
 	"encoding/binary"
 	"encoding/json"
 	"encoding/xml"
@@ -352,7 +353,64 @@ func extractTextualMetadataFromPNG(data []byte) (string, error) {
 	if len(data) < 8 {
 		return "", errors.New("not a valid PNG")
 	}
+
+	signature := func(s string) bool {
+		return strings.Contains(s, "<x:xmpmeta") || strings.Contains(s, "http://ns.adobe.com/xap/1.0/")
+	}
+
+	readITXt := func(d []byte) (string, bool) {
+		i := bytes.IndexByte(d, 0)
+		if i == -1 || len(d) < i+2 {
+			return "", false
+		}
+		rest := d[i+1:]
+		if len(rest) < 2 {
+			return "", false
+		}
+		compFlag := rest[0]
+		rest = rest[2:]
+		langEnd := bytes.IndexByte(rest, 0)
+		if langEnd == -1 {
+			return "", false
+		}
+		rest = rest[langEnd+1:]
+		transEnd := bytes.IndexByte(rest, 0)
+		if transEnd == -1 {
+			return "", false
+		}
+		textBytes := rest[transEnd+1:]
+		if compFlag == 1 {
+			zr, err := zlib.NewReader(bytes.NewReader(textBytes))
+			if err == nil {
+				defer zr.Close()
+				if decoded, err := io.ReadAll(zr); err == nil {
+					textBytes = decoded
+				}
+			}
+		}
+		return string(textBytes), true
+	}
+
+	readZTxt := func(d []byte) (string, bool) {
+		i := bytes.IndexByte(d, 0)
+		if i == -1 || len(d) < i+2 {
+			return "", false
+		}
+		compData := d[i+2:]
+		zr, err := zlib.NewReader(bytes.NewReader(compData))
+		if err != nil {
+			return "", false
+		}
+		defer zr.Close()
+		decoded, err := io.ReadAll(zr)
+		if err != nil {
+			return "", false
+		}
+		return string(decoded), true
+	}
+
 	offset := 8
+	var firstText string
 	for offset+8 <= len(data) {
 		length := int(binary.BigEndian.Uint32(data[offset : offset+4]))
 		chunkType := string(data[offset+4 : offset+8])
@@ -367,15 +425,45 @@ func extractTextualMetadataFromPNG(data []byte) (string, error) {
 		switch chunkType {
 		case "tEXt":
 			d := data[chunkDataStart:chunkDataEnd]
+			var txt string
 			if i := bytes.IndexByte(d, 0); i != -1 {
-				return string(d[i+1:]), nil
+				txt = string(d[i+1:])
+			} else {
+				txt = string(d)
 			}
-			return string(d), nil
-		case "iTXt", "zTXt":
-			// Other text formats - skip for now
+			if firstText == "" {
+				firstText = txt
+			}
+			if signature(txt) {
+				return txt, nil
+			}
+		case "iTXt":
+			txt, ok := readITXt(data[chunkDataStart:chunkDataEnd])
+			if ok {
+				if firstText == "" {
+					firstText = txt
+				}
+				if signature(txt) {
+					return txt, nil
+				}
+			}
+		case "zTXt":
+			txt, ok := readZTxt(data[chunkDataStart:chunkDataEnd])
+			if ok {
+				if firstText == "" {
+					firstText = txt
+				}
+				if signature(txt) {
+					return txt, nil
+				}
+			}
 		}
 
 		offset = chunkCRCEnd
+	}
+
+	if firstText != "" {
+		return firstText, nil
 	}
 
 	return "", errors.New("textual metadata not found")
@@ -656,7 +744,32 @@ func addMetadataToImage(imagePath string, date string, worldName string, authorN
 		// ワールド情報あり → rMQRコードのみ白背景で右上に描画
 		outImg := image.NewRGBA(bounds)
 		draw.Draw(outImg, bounds, img, bounds.Min, draw.Src)
-		// TODO: rMQRコード生成と描画
+
+		// QR生成とスケーリング（NearestNeighborで3倍、右から60px）
+		isDark := isDarkImage(img)
+		qrImg, err := generateRMQR(worldURL, isDark)
+		if err == nil {
+			qrBounds := qrImg.Bounds()
+			scaleFactor := 3
+			scaledWidth := qrBounds.Dx() * scaleFactor
+			scaledHeight := qrBounds.Dy() * scaleFactor
+			qrX := width - scaledWidth - 60
+			if qrX < 0 {
+				qrX = 0
+			}
+			qrY := 10
+			if qrY < 0 {
+				qrY = 0
+			}
+
+			scaledQR := image.NewRGBA(image.Rect(0, 0, scaledWidth, scaledHeight))
+			xdraw.NearestNeighbor.Scale(scaledQR, scaledQR.Bounds(), qrImg, qrBounds, draw.Src, nil)
+
+			// 白背景を敷いてからQRを重ねる
+			bgRect := image.Rect(qrX, qrY, qrX+scaledWidth, qrY+scaledHeight)
+			draw.Draw(outImg, bgRect, &image.Uniform{color.White}, image.Point{}, draw.Src)
+			draw.Draw(outImg, bgRect, scaledQR, image.Point{}, draw.Over)
+		}
 		
 		outputDir := filepath.Join(filepath.Dir(imagePath), "annotated")
 		if err := os.MkdirAll(outputDir, 0755); err != nil {
@@ -985,7 +1098,7 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 	iconSpacing := 12 // icon と text の間
 	gapSize := 28     // section 間のギャップ
 	mainFontSize := 32.0
-	rightPadding := 14
+	rightPadding := 60
 
 	// フォントフェイス（測定用）
 	mainFace := truetype.NewFace(font, &truetype.Options{Size: mainFontSize, DPI: 72})
