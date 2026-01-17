@@ -9,6 +9,9 @@ import (
 	"flag"
 	"fmt"
 	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
 	"io"
 	"os"
 	"path/filepath"
@@ -18,6 +21,9 @@ import (
 	"time"
 
 	_ "image/jpeg"
+
+	"github.com/chai2010/webp"
+	_ "golang.org/x/image/webp"
 )
 
 var logMutex sync.Mutex
@@ -567,11 +573,174 @@ func readVRChatExifPNG(filename string, jsonOut, rawOut, pretty, noEscape, verbo
 }
 
 func isDarkImage(img image.Image) bool {
-	return false // プレースホルダー
+	bounds := img.Bounds()
+	w := bounds.Dx()
+	h := bounds.Dy()
+
+	// サンプリング: 全体の約10%を確認
+	sampleStep := 1
+	if w > 100 || h > 100 {
+		sampleStep = (w + 99) / 100
+	}
+
+	var totalBrightness float64
+	sampleCount := 0
+
+	for y := bounds.Min.Y; y < bounds.Max.Y; y += sampleStep {
+		for x := bounds.Min.X; x < bounds.Max.X; x += sampleStep {
+			r, g, b, _ := img.At(x, y).RGBA()
+			// RGBA returns 16-bit values
+			brightness := float64(r+g+b) / 3.0 / 65535.0
+			totalBrightness += brightness
+			sampleCount++
+		}
+	}
+
+	if sampleCount == 0 {
+		return false
+	}
+
+	averageBrightness := totalBrightness / float64(sampleCount)
+	return averageBrightness < 0.5 // 50%を閾値とする
 }
 
 func addMetadataToImage(imagePath string, date string, worldName string, authorName string, authorID string, worldURL string) error {
-	return fmt.Errorf("not implemented")
+	// 画像を読み込む
+	file, err := os.Open(imagePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	// 画像をデコード
+	img, _, err := image.Decode(file)
+	if err != nil {
+		return err
+	}
+
+	bounds := img.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+
+	// プリントカメラ解像度判定
+	if isPrintCameraResolutionOnly(img) {
+		if worldURL == "" {
+			// ワールド情報なし → 元画像をそのまま保存
+			outputDir := filepath.Join(filepath.Dir(imagePath), "annotated")
+			if err := os.MkdirAll(outputDir, 0755); err != nil {
+				return err
+			}
+			outputPath := filepath.Join(outputDir, filepath.Base(imagePath))
+			
+			// 元画像をコピー
+			origData, err := os.ReadFile(imagePath)
+			if err != nil {
+				return err
+			}
+			return os.WriteFile(outputPath, origData, 0644)
+		}
+		
+		// ワールド情報あり → rMQRコードのみ白背景で右上に描画
+		outImg := image.NewRGBA(bounds)
+		draw.Draw(outImg, bounds, img, bounds.Min, draw.Src)
+		// TODO: rMQRコード生成と描画
+		
+		outputDir := filepath.Join(filepath.Dir(imagePath), "annotated")
+		if err := os.MkdirAll(outputDir, 0755); err != nil {
+			return err
+		}
+		outputPath := filepath.Join(outputDir, filepath.Base(imagePath))
+		isWebP := strings.HasSuffix(strings.ToLower(imagePath), ".webp")
+		
+		if isWebP {
+			if !strings.HasSuffix(strings.ToLower(outputPath), ".webp") {
+				outputPath = outputPath + ".webp"
+			}
+			var buf bytes.Buffer
+			err = webp.Encode(&buf, outImg, &webp.Options{Lossless: true, Quality: 100})
+			if err != nil {
+				return err
+			}
+			
+			outFile, err := os.Create(outputPath)
+			if err != nil {
+				return err
+			}
+			defer outFile.Close()
+			_, err = outFile.Write(buf.Bytes())
+			return err
+		} else {
+			if strings.HasSuffix(strings.ToLower(outputPath), ".webp") {
+				outputPath = outputPath[:len(outputPath)-5] + ".png"
+			}
+			outFile, err := os.Create(outputPath)
+			if err != nil {
+				return err
+			}
+			defer outFile.Close()
+			return png.Encode(outFile, outImg)
+		}
+	}
+
+	// 通常処理（余白・テキスト・QR）
+	marginTop := 69
+	newWidth := width
+	newHeight := height + marginTop
+	var bgColor color.Color
+	if isDarkImage(img) {
+		bgColor = color.Black
+	} else {
+		bgColor = color.White
+	}
+	newImg := image.NewRGBA(image.Rect(0, 0, newWidth, newHeight))
+	draw.Draw(newImg, newImg.Bounds(), &image.Uniform{bgColor}, image.Point{}, draw.Src)
+	draw.Draw(newImg, image.Rect(0, marginTop, width, marginTop+height), img, bounds.Min, draw.Over)
+	
+	if worldName == "" {
+		if date == "" {
+			date = extractDateFromFilename(imagePath)
+		}
+		worldURL = ""
+	}
+	
+	// TODO: addTextToImage の呼び出し
+	
+	outputDir := filepath.Join(filepath.Dir(imagePath), "annotated")
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		return err
+	}
+	outputPath := filepath.Join(outputDir, filepath.Base(imagePath))
+
+	// 拡張子判定
+	isWebP := strings.HasSuffix(strings.ToLower(imagePath), ".webp")
+	if isWebP {
+		if !strings.HasSuffix(strings.ToLower(outputPath), ".webp") {
+			outputPath = outputPath + ".webp"
+		}
+		var buf bytes.Buffer
+		err = webp.Encode(&buf, newImg, &webp.Options{Lossless: true, Quality: 100})
+		if err != nil {
+			return err
+		}
+		
+		outFile, err := os.Create(outputPath)
+		if err != nil {
+			return err
+		}
+		defer outFile.Close()
+		_, err = outFile.Write(buf.Bytes())
+		return err
+	} else {
+		if strings.HasSuffix(strings.ToLower(outputPath), ".webp") {
+			outputPath = outputPath[:len(outputPath)-5] + ".png"
+		}
+		outFile, err := os.Create(outputPath)
+		if err != nil {
+			return err
+		}
+		defer outFile.Close()
+		return png.Encode(outFile, newImg)
+	}
 }
 
 func extractDateFromFilename(filePath string) string {
