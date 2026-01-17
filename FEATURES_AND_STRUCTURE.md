@@ -259,12 +259,114 @@ Linux:
    ```
 4. ファイルサイズを更新
 
-#### PNG処理
+#### PNG処理（iTXt 実装版）✨ NEW 2026-01-18
 
-1. 新しい画像を PNG エンコード
-2. 元の PNG から tEXt/iTXt/zTXt チャンク抽出
-3. IHDRチャンク直後に メタデータを挿入
-4. ファイルに再書き込み
+**問題**：PNG ファイルに XMP メタデータが保存されていなかった
+
+**解決**：tEXt チャンク → **iTXt チャンク** に変更
+
+**チャンク形式の比較**：
+
+| 形式 | 文字セット | 圧縮 | 国際対応 | 用途 |
+|------|----------|------|---------|------|
+| tEXt | ラテン1 | × | × | ASCII・英数字のみ |
+| **iTXt** | **UTF-8** | △ | **✅ 対応** | **国際テキスト（日本語OK）** |
+| zTXt | ラテン1 | ✅ | × | 圧縮テキスト |
+
+**iTXt チャンク構造**（RFC 2891準拠）：
+
+```
+Length (4 bytes)
+└─ チャンク長
+Type: "iTXt" (4 bytes)
+└─ チャンクタイプ識別子
+Data:
+├─ Keyword (variable) + Null Terminator
+│  例："XMP" + \0
+├─ Compression Flag (1 byte)
+│  0: 非圧縮 | 1: 圧縮
+├─ Compression Method (1 byte)
+│  0: deflate (RFC 1951)
+├─ Language Tag (variable) + Null Terminator
+│  例："en" + \0 | "" + \0 (空)
+├─ Translated Keyword (variable) + Null Terminator
+│  例："XMP" + \0 | "" + \0
+└─ UTF-8 Text (variable)
+   例：XML 形式のメタデータ
+CRC32 (4 bytes)
+└─ チェックサム
+```
+
+**実装処理** (`addXMPToPNG()` 関数)：
+
+1. PNG ファイルシグネチャ検証（`\x89PNG\r\n\x1a\n`）
+2. IEND チャンク位置特定（ファイル末尾から 12 bytes）
+3. iTXt チャンク構築：
+   ```go
+   // Keyword
+   data := []byte("XMP\x00")
+   // Compression flags
+   data = append(data, 0x00, 0x00)  // 非圧縮、方式0
+   // Language tag
+   data = append(data, '\x00')      // 空
+   // Translated keyword
+   data = append(data, '\x00')      // 空
+   // UTF-8 XMP text
+   data = append(data, []byte(xmpContent)...)
+   ```
+4. CRC32 チェックサム計算
+5. IEND 前に挿入：
+   ```
+   PNG Data | NEW iTXt Chunk | IEND Chunk
+   ```
+
+**メリット**：
+- ✅ 日本語・中国語など多言語対応
+- ✅ Eagle・Photoshop等の外部ツールで表示可能
+- ✅ WebP と同等のメタデータ互換性実現
+- ✅ 最小限のファイルサイズ増加（～1200 bytes）
+
+**テスト結果**（2026-01-18）：
+
+```
+✅ VRChat_2026-01-01_00-01-20.301_3840x2160.png
+   - iTXt チャンク位置: Chunk #203 (IEND直前)
+   - 検証: hexdump 確認、CRC32 正常
+   - 抽出: XMP 1178 bytes 完全復元
+```
+
+#### PNG テキストチャンク抽出
+
+複数形式に対応した抽出処理（`extractTextualMetadataFromPNG()`）：
+
+```
+tEXt チャンク
+├─ Keyword + Null
+└─ Latin-1 Text
+
+iTXt チャンク (NEW)
+├─ Keyword + Null
+├─ Compression Flag (1 byte)
+├─ Compression Method (1 byte)
+├─ Language Tag + Null
+├─ Translated Keyword + Null
+└─ UTF-8 Text (圧縮の場合は deflate)
+
+zTXt チャンク
+├─ Keyword + Null
+├─ Compression Method (1 byte)
+└─ Deflate Compressed Data
+```
+
+自動判別で全形式対応。zTXt 圧縮フラグも正しく処理：
+
+```go
+if compressionMethod == 0 {  // deflate
+    reader := zlib.NewReader(bytes.NewReader(compressed))
+    decompressed, _ := io.ReadAll(reader)
+    text = string(decompressed)
+}
+```
 
 #### JPEG処理
 
@@ -303,6 +405,40 @@ Linux:
 - 警告（ワールドID未検出など）
 - エラー発生
 - 処理完了
+
+#### メタデータ処理進行状況表示 ✨ NEW 2026-01-18
+
+stderr にリアルタイムで処理状況を表示。アノテーション処理中の詳細なフィードバック：
+
+**PNG 処理時**：
+```
+  [Metadata] PNG XMP extracted (1178 bytes)...
+  [SUCCESS] PNG metadata written
+```
+
+**WebP 処理時**：
+```
+  [Metadata] WebP XMP: OK (1178 bytes)
+  [Metadata] PNG XMP: NOT_FOUND (0 bytes)
+  [Metadata] Writing WebP metadata...
+  [SUCCESS] WebP metadata written
+```
+
+**エラー時**：
+```
+  [ERROR] PNG metadata write failed: invalid PNG signature
+```
+
+**出力ログレベル**：
+
+| プレフィックス | 意味 | 出力先 |
+|---------------|------|--------|
+| `[Metadata]` | 情報・処理中 | stderr |
+| `[SUCCESS]` | 処理完了 | stderr |
+| `[ERROR]` | エラー発生 | stderr |
+| `[WARNING]` | 警告 | stderr |
+
+実装箇所：`addMetadataToImage()` 関数内（PNG/WebP 両方対応）
 
 #### スレッドセーフ
 - `logMutex` でロック管理

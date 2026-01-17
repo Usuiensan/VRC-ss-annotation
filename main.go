@@ -410,6 +410,7 @@ func extractTextualMetadataFromPNG(data []byte) (string, error) {
 	}
 
 	readITXt := func(d []byte) (string, bool) {
+		// iTXt形式: Keyword\0 + CompressionFlag(1) + CompressionMethod(1) + LanguageTag + \0 + TranslatedKeyword + \0 + Text
 		i := bytes.IndexByte(d, 0)
 		if i == -1 || len(d) < i+2 {
 			return "", false
@@ -419,26 +420,36 @@ func extractTextualMetadataFromPNG(data []byte) (string, error) {
 			return "", false
 		}
 		compFlag := rest[0]
+		// compMethod := rest[1]  // Usually 0 (deflate)
 		rest = rest[2:]
+		
+		// Skip language tag
 		langEnd := bytes.IndexByte(rest, 0)
 		if langEnd == -1 {
 			return "", false
 		}
 		rest = rest[langEnd+1:]
+		
+		// Skip translated keyword
 		transEnd := bytes.IndexByte(rest, 0)
 		if transEnd == -1 {
 			return "", false
 		}
 		textBytes := rest[transEnd+1:]
+		
+		// Check compression flag
 		if compFlag == 1 {
+			// Compressed
 			zr, err := zlib.NewReader(bytes.NewReader(textBytes))
 			if err == nil {
 				defer zr.Close()
 				if decoded, err := io.ReadAll(zr); err == nil {
-					textBytes = decoded
+					return string(decoded), true
 				}
 			}
+			return "", false
 		}
+		// Uncompressed
 		return string(textBytes), true
 	}
 
@@ -946,32 +957,42 @@ func addMetadataToImage(imagePath string, date string, worldName string, authorN
 			webpXMP, webpErr := extractTextualMetadataFromWebP(origData)
 			pngXMP, pngErr := extractTextualMetadataFromPNG(origData)
 			
-			fmt.Fprintf(os.Stderr, "DEBUG: WebP XMP抽出 - エラー: %v, サイズ: %d\n", webpErr, len(webpXMP))
-			fmt.Fprintf(os.Stderr, "DEBUG: PNG XMP抽出 - エラー: %v, サイズ: %d\n", pngErr, len(pngXMP))
+fmt.Fprintf(os.Stderr, "  [Metadata] WebP XMP: %s (%d bytes)\n", func() string {
+			if webpErr != nil { return "ERROR" }
+			if webpXMP == "" { return "NOT_FOUND" }
+			return "OK"
+		}(), len(webpXMP))
+		fmt.Fprintf(os.Stderr, "  [Metadata] PNG XMP: %s (%d bytes)\n", func() string {
+			if pngErr != nil { return "ERROR" }
+			if pngXMP == "" { return "NOT_FOUND" }
+			return "OK"
+			}(), len(pngXMP))
 			
 			if webpErr == nil && webpXMP != "" {
-				fmt.Fprintf(os.Stderr, "DEBUG: WebP XMPを追加します\n")
+				fmt.Fprintf(os.Stderr, "  [Metadata] Writing WebP metadata...\n")
 				if err := addXMPToWebP(outputPath, webpXMP); err != nil {
-					fmt.Fprintf(os.Stderr, "DEBUG: WebP XMP追加エラー: %v\n", err)
+					fmt.Fprintf(os.Stderr, "  [ERROR] WebP metadata write failed: %v\n", err)
 					return err
 				}
+				fmt.Fprintf(os.Stderr, "  [SUCCESS] WebP metadata written\n")
 				xmpAdded = true
 			}
 			// PNG からの変換時は XMP を追加してみる
 			if !xmpAdded && pngErr == nil && pngXMP != "" {
-				fmt.Fprintf(os.Stderr, "DEBUG: PNG→WebP XMPを追加します\n")
+				fmt.Fprintf(os.Stderr, "  [Metadata] Writing PNG->WebP metadata...\n")
 				if err := addXMPToWebP(outputPath, pngXMP); err != nil {
-					fmt.Fprintf(os.Stderr, "DEBUG: PNG→WebP XMP追加エラー: %v\n", err)
+					fmt.Fprintf(os.Stderr, "  [ERROR] PNG->WebP metadata write failed: %v\n", err)
 					return err
 				}
+				fmt.Fprintf(os.Stderr, "  [SUCCESS] PNG->WebP metadata written\n")
 				xmpAdded = true
 			}
 			
 			// メタデータが追加されたかチェック
 			if !xmpAdded {
-				fmt.Fprintf(os.Stderr, "警告: プリントカメラ解像度WebP (%s) にメタデータがありません\n", imagePath)
+				fmt.Fprintf(os.Stderr, "  [WARNING] Print camera resolution WebP (%s) has no metadata\n", imagePath)
 			} else {
-				fmt.Fprintf(os.Stderr, "DEBUG: WebP XMP追加完了\n")
+				fmt.Fprintf(os.Stderr, "  [SUCCESS] WebP metadata processing completed\n")
 			}
 			
 			// メタデータ検証は暫定的に無効化（保存確認待ち）
@@ -1114,15 +1135,25 @@ func addMetadataToImage(imagePath string, date string, worldName string, authorN
 		
 		// PNG 保存後に XMP メタデータを追加
 		if xmp, err := extractTextualMetadataFromPNG(origData); err == nil && xmp != "" {
+			fmt.Fprintf(os.Stderr, "  [Metadata] PNG XMP extracted (%d bytes)...\n", len(xmp))
 			if err := addXMPToPNG(outputPath, xmp); err != nil {
+				fmt.Fprintf(os.Stderr, "  [ERROR] PNG metadata write failed: %v\n", err)
 				return err
 			}
+			fmt.Fprintf(os.Stderr, "  [SUCCESS] PNG metadata written\n")
+		} else if xmp == "" {
+			fmt.Fprintf(os.Stderr, "  [Metadata] PNG XMP not found\n")
+		} else {
+			fmt.Fprintf(os.Stderr, "  [Metadata] PNG XMP extraction error: %v\n", err)
 		}
 		// WebP からの変換時は XMP を追加してみる
 		if xmp2, err := extractTextualMetadataFromWebP(origData); err == nil && xmp2 != "" {
+			fmt.Fprintf(os.Stderr, "  [Metadata] WebP XMP extracted (%d bytes)...\n", len(xmp2))
 			if err := addXMPToPNG(outputPath, xmp2); err != nil {
+				fmt.Fprintf(os.Stderr, "  [ERROR] WebP->PNG metadata write failed: %v\n", err)
 				return err
 			}
+			fmt.Fprintf(os.Stderr, "  [SUCCESS] WebP->PNG metadata written\n")
 		}
 		
 		// メタデータ検証は暫定的に無効化（保存確認待ち）
@@ -1630,7 +1661,8 @@ func writeMetadataChunk(buf *bytes.Buffer, chunkID string, data []byte) error {
 	return nil
 }
 
-// addXMPToPNG はデコード済みの PNG ファイルに XMP メタデータ（zTXt チャンク）を追加
+// addXMPToPNG はデコード済みの PNG ファイルに XMP メタデータを追加します
+// iTXt チャンク（UTF-8対応国際テキスト）を使用して日本語対応を実現します
 func addXMPToPNG(pngPath string, xmpData string) error {
 	if xmpData == "" {
 		return nil
@@ -1640,77 +1672,64 @@ func addXMPToPNG(pngPath string, xmpData string) error {
 	if err != nil {
 		return err
 	}
-	if len(data) < 8 {
+	if len(data) < 12 {
 		return errors.New("invalid PNG file")
 	}
 
-	// PNGチャンクをパースし、既存のzTXt(XMP)チャンクを除去
-	var out bytes.Buffer
-	out.Write(data[:8]) // PNG signature
-
-	offset := 8
-	for offset < len(data) {
-		if offset+8 > len(data) {
-			break
-		}
-		clen := int(binary.BigEndian.Uint32(data[offset : offset+4]))
-		ctype := string(data[offset+4 : offset+8])
-		chunkEnd := offset + 8 + clen + 4
-		if chunkEnd > len(data) {
-			break
-		}
-		// zTXtかつXMP用キーワードならスキップ
-		if ctype == "zTXt" {
-			// キーワード抽出
-			kEnd := offset + 8
-			for ; kEnd < offset+8+clen && data[kEnd] != 0; kEnd++ {}
-			keyword := string(data[offset+8 : kEnd])
-			if keyword == "XML:com.adobe.xmp" {
-				offset = chunkEnd
-				continue
-			}
-		}
-		out.Write(data[offset:chunkEnd])
-		offset = chunkEnd
+	// PNG signature and IHDR check
+	if string(data[:8]) != "\x89PNG\r\n\x1a\n" {
+		return errors.New("invalid PNG signature")
 	}
 
-	// zTXtチャンク作成（圧縮フラグ=1（deflate圧縮）, 圧縮方式=0）
+	// IEND chunk is always "IEND" + 0 length + CRC (12 bytes at the end)
+	// We want to insert iTXt just before IEND
+	
+	// Find IEND chunk
+	iendPos := len(data) - 12
+	if iendPos < 8 {
+		return errors.New("PNG too short for IEND")
+	}
+	
+	// Verify IEND chunk
+	if string(data[iendPos+4:iendPos+8]) != "IEND" {
+		return errors.New("invalid IEND chunk")
+	}
+
+	// Create iTXt chunk
+	// iTXt format: Keyword\0 + CompressionFlag(1) + CompressionMethod(1) + LanguageTag + \0 + TranslatedKeyword + \0 + Text
 	keyword := "XML:com.adobe.xmp"
 	var chunkBuf bytes.Buffer
 	chunkBuf.Write([]byte(keyword))
-	chunkBuf.WriteByte(0) // Null separator
-	chunkBuf.WriteByte(1) // Compression flag: 1=deflate圧縮
-	chunkBuf.WriteByte(0) // Compression method: 0=deflate
-	var compBuf bytes.Buffer
-	zw := zlib.NewWriter(&compBuf)
-	if _, err := zw.Write([]byte(xmpData)); err != nil {
-		return err
-	}
-	zw.Close()
-	chunkBuf.Write(compBuf.Bytes())
+	chunkBuf.WriteByte(0)            // Null separator after keyword
+	chunkBuf.WriteByte(0)            // Compression flag: 0 = uncompressed
+	chunkBuf.WriteByte(0)            // Compression method (not used if uncompressed)
+	chunkBuf.WriteByte(0)            // Null (language tag is empty)
+	chunkBuf.WriteByte(0)            // Null (translated keyword is empty)
+	chunkBuf.Write([]byte(xmpData))  // XMP text data
 	chunkData := chunkBuf.Bytes()
 
-	// IEND直前にzTXt挿入
-	outBytes := out.Bytes()
-	insertPos := len(outBytes) - 12
-	if insertPos < 8 {
-		return errors.New("invalid PNG structure for zTXt insert")
-	}
-	var final bytes.Buffer
-	final.Write(outBytes[:insertPos])
+	// Build iTXt chunk: length(4) + "iTXt"(4) + data + CRC(4)
+	var newChunk bytes.Buffer
 	chunkLen := make([]byte, 4)
 	binary.BigEndian.PutUint32(chunkLen, uint32(len(chunkData)))
-	final.Write(chunkLen)
-	final.Write([]byte("zTXt"))
-	final.Write(chunkData)
-	crcData := append([]byte("zTXt"), chunkData...)
+	newChunk.Write(chunkLen)
+	newChunk.Write([]byte("iTXt"))
+	newChunk.Write(chunkData)
+	
+	// Calculate CRC
+	crcData := append([]byte("iTXt"), chunkData...)
 	crcVal := crc32.ChecksumIEEE(crcData)
 	crcBytes := make([]byte, 4)
 	binary.BigEndian.PutUint32(crcBytes, crcVal)
-	final.Write(crcBytes)
-	final.Write(outBytes[insertPos:])
+	newChunk.Write(crcBytes)
 
-	return os.WriteFile(pngPath, final.Bytes(), 0644)
+	// Assemble final PNG: original[0:iendPos] + iTXt chunk + IEND chunk
+	var result bytes.Buffer
+	result.Write(data[:iendPos])       // Everything before IEND
+	result.Write(newChunk.Bytes())     // New iTXt chunk
+	result.Write(data[iendPos:])       // Original IEND chunk
+
+	return os.WriteFile(pngPath, result.Bytes(), 0644)
 }
 
 // addXMPToWebP はデコード済みの WebP ファイルに XMP メタデータを追加
