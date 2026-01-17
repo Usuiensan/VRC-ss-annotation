@@ -813,10 +813,9 @@ func formatDateAsYMD(dateStr string) string {
 }
 
 // rMQRコード（長方形QRコード）を生成
-// shogo82148/qrcode/rmqrパッケージを使用
+// rMQRコード（横長型）を生成
 func generateRMQR(url string, isDark bool) (image.Image, error) {
-	// rMQRコード（Rectangular Micro QR Code）を生成
-	// rmqr.Encode関数を使用してrMQRコードを生成
+	// rmqr で Rectangular Micro QR コード生成
 	qrImage, err := rmqr.Encode(
 		[]byte(url),
 		rmqr.WithLevel(rmqr.LevelM),
@@ -918,104 +917,154 @@ func loadSVGIcon(iconName, colorHex string) (image.Image, error) {
 	return iconImg, nil
 }
 
-// addTextToImageはマージン部分にテキスト情報とQRコードを描画
-// date: ISO8601形式またはYYYY-MM-DDTHH:MM:SS形式
-// worldName, authorName, worldURL, authorID: メタデータ
+// addTextToImageはマージン部分にテキスト情報を[icon] [date] [icon] [author] [icon] [world] ... [QR]レイアウトで描画
+// SVG＋freetype を使用して、余白内に横一行で配置
 func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worldURL string, marginTop, origWidth, origHeight int, textColor, bgColor color.Color, isDark, needsQR bool) error {
 	if marginTop <= 0 {
-		return nil // マージンがない場合は何もしない
+		return nil
 	}
 	
-	// フォント読み込み（標準フォント）
-	fontPath := "C:\\Windows\\Fonts\\BIZ-UDGothicR.ttc"
+	// テキスト色を RGB に変換
+	r, g, b, _ := textColor.RGBA()
+	colorHex := fmt.Sprintf("%02X%02X%02X", r>>8, g>>8, b>>8)
+	
+	// フォント読み込み（日時表示用 - モノスペース）
+	monoFontPath := "C:\\Windows\\Fonts\\consola.ttf"
+	if _, err := os.Stat(monoFontPath); os.IsNotExist(err) {
+		monoFontPath = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
+	}
+	monoFontData, err := os.ReadFile(monoFontPath)
+	if err != nil {
+		// フォントなくても続行
+		monoFontData = nil
+	}
+	var monoFont *truetype.Font
+	if monoFontData != nil {
+		monoFont, _ = truetype.Parse(monoFontData)
+	}
+	
+	// 標準フォント読み込み
+	fontPath := "C:\\Windows\\Fonts\\segoeui.ttf"
 	if _, err := os.Stat(fontPath); os.IsNotExist(err) {
 		fontPath = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 	}
 	fontData, err := os.ReadFile(fontPath)
 	if err != nil {
-		return nil // フォントが見つからない場合はスキップ
+		return nil
 	}
 	font, err := truetype.Parse(fontData)
 	if err != nil {
 		return nil
 	}
 	
-	// モノスペースフォント読み込み（日時表示用）
-	monoFontPath := "C:\\Users\\miwam\\AppData\\Local\\Microsoft\\Windows\\Fonts\\OCR-BK.otf"
-	if _, err := os.Stat(monoFontPath); os.IsNotExist(err) {
-		monoFontPath = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
-	}
-	monoFontData, err := os.ReadFile(monoFontPath)
-	var monoFont *truetype.Font
-	if err == nil {
-		monoFont, _ = truetype.Parse(monoFontData)
-	}
+	// レイアウト定数
+	marginLeft := 20
+	iconSize := 20
+	spacing := 10 // icon と text の間
+	gapSize := 25 // section 間のギャップ
+	textBaseline := marginTop - 10
+	iconY := marginTop - 35
 	
-	if monoFont == nil {
-		monoFont = font // フォントが見つからない場合は標準フォントを使用
-	}
+	// 日時フォーマット
+	formattedDate := formatDateAsYMD(date)
 	
-	// テキスト描画用のコンテキスト（日時）
+	// freetype コンテキスト設定
 	c := freetype.NewContext()
 	c.SetDPI(72)
-	c.SetFont(monoFont)
-	c.SetFontSize(40)
+	c.SetFontSize(14)
 	c.SetSrc(image.NewUniform(textColor))
 	c.SetDst(img)
 	c.SetClip(img.Bounds())
 	
-	// 日時表示（左側）
-	formattedDate := formatDateAsYMD(date)
-	pt := freetype.Pt(20, marginTop-20)
-	if _, err := c.DrawString(formattedDate, pt); err != nil {
-		// エラーが出ても続行
+	// カレンダーアイコン + 日時
+	if monoFont != nil {
+		c.SetFont(monoFont)
+	} else {
+		c.SetFont(font)
 	}
 	
-	// ワールド情報が存在する場合のみ描画
+	currentX := marginLeft
+	
+	// アイコン1: カレンダー
+	if calIcon, err := loadSVGIcon("calendar", colorHex); err == nil {
+		iconRect := image.Rect(currentX, iconY, currentX+iconSize, iconY+iconSize)
+		draw.Draw(img, iconRect, calIcon, image.Point{}, draw.Over)
+	}
+	currentX += iconSize + spacing
+	
+	// テキスト: 日時
+	pt := freetype.Pt(currentX, textBaseline)
+	c.DrawString(formattedDate, pt)
+	
+	// 日時幅を概算（固定フォント、16文字程度）
+	currentX += 200
+	currentX += gapSize
+	
+	// ワールド情報がある場合のみアイコン＆テキスト描画
 	if worldName != "" {
-		// メタデータアイコンとテキストを描画
-		c.SetFont(font)
-		c.SetFontSize(11)
+		// アイコン2: カメラ（作成者）
+		if cameraIcon, err := loadSVGIcon("camera", colorHex); err == nil {
+			iconRect := image.Rect(currentX, iconY, currentX+iconSize, iconY+iconSize)
+			draw.Draw(img, iconRect, cameraIcon, image.Point{}, draw.Over)
+		}
+		currentX += iconSize + spacing
 		
-		// ワールド名
-		if worldIcon, err := loadSVGIcon("world", "FFFFFF"); err == nil {
-			draw.Draw(img, image.Rect(20, marginTop-45, 40, marginTop-25), worldIcon, image.Point{}, draw.Over)
+		// テキスト: 作成者名（短縮）
+		authorText := authorName
+		if len(authorText) > 20 {
+			authorText = authorText[:17] + "..."
 		}
-		worldText := "World: " + worldName
-		if len(worldText) > 50 {
-			worldText = worldText[:47] + "..."
+		c.SetFont(font)
+		c.SetFontSize(12)
+		pt = freetype.Pt(currentX, textBaseline)
+		c.DrawString(authorText, pt)
+		
+		currentX += 180
+		currentX += gapSize
+		
+		// アイコン3: ロケーション（ワールド）
+		if locIcon, err := loadSVGIcon("location", colorHex); err == nil {
+			iconRect := image.Rect(currentX, iconY, currentX+iconSize, iconY+iconSize)
+			draw.Draw(img, iconRect, locIcon, image.Point{}, draw.Over)
 		}
-		pt = freetype.Pt(50, marginTop-30)
+		currentX += iconSize + spacing
+		
+		// テキスト: ワールド名（短縮）
+		worldText := worldName
+		if len(worldText) > 20 {
+			worldText = worldText[:17] + "..."
+		}
+		c.SetFont(font)
+		c.SetFontSize(12)
+		pt = freetype.Pt(currentX, textBaseline)
 		c.DrawString(worldText, pt)
 		
-		// 作成者名
-		if authorIcon, err := loadSVGIcon("camera", "FFFFFF"); err == nil {
-			draw.Draw(img, image.Rect(20, marginTop-60, 40, marginTop-40), authorIcon, image.Point{}, draw.Over)
-		}
-		authorText := "Author: " + authorName
-		if len(authorText) > 50 {
-			authorText = authorText[:47] + "..."
-		}
-		pt = freetype.Pt(50, marginTop-45)
-		c.DrawString(authorText, pt)
+		currentX += 180
 	}
 	
-	// QRコード生成と描画
+	// rMQRコード（右端に配置）
 	if needsQR && worldURL != "" {
 		qrImg, err := generateRMQR(worldURL, isDark)
 		if err == nil {
-			// QRコードを右上に配置（3倍拡大）
 			qrBounds := qrImg.Bounds()
-			qrSize := (qrBounds.Max.X - qrBounds.Min.X) * 3
-			qrX := origWidth - qrSize - 20
-			qrY := 15
+			qrWidth := qrBounds.Max.X - qrBounds.Min.X
+			qrHeight := qrBounds.Max.Y - qrBounds.Min.Y
 			
-			// QRコードをスケーリング
-			scaledQR := image.NewRGBA(image.Rect(0, 0, qrSize, qrSize))
-			xdraw.ApproxBiLinear.Scale(scaledQR, scaledQR.Bounds(), qrImg, qrImg.Bounds(), draw.Over, nil)
+			// 3倍拡大
+			scaleFactor := 3
+			scaledWidth := qrWidth * scaleFactor
+			scaledHeight := qrHeight * scaleFactor
 			
-			// イメージに描画
-			draw.Draw(img, image.Rect(qrX, qrY, qrX+qrSize, qrY+qrSize), scaledQR, image.Point{}, draw.Over)
+			// 右上に配置
+			qrX := origWidth - scaledWidth - 15
+			qrY := marginTop - scaledHeight - 5
+			
+			// スケーリング
+			scaledQR := image.NewRGBA(image.Rect(0, 0, scaledWidth, scaledHeight))
+			xdraw.ApproxBiLinear.Scale(scaledQR, scaledQR.Bounds(), qrImg, qrBounds, draw.Over, nil)
+			
+			// 描画
+			draw.Draw(img, image.Rect(qrX, qrY, qrX+scaledWidth, qrY+scaledHeight), scaledQR, image.Point{}, draw.Over)
 		}
 	}
 	
