@@ -447,17 +447,31 @@ func extractTextualMetadataFromPNG(data []byte) (string, error) {
 		if i == -1 || len(d) < i+2 {
 			return "", false
 		}
-		compData := d[i+2:]
-		zr, err := zlib.NewReader(bytes.NewReader(compData))
-		if err != nil {
+		// zTXt形式: キーワード\0 圧縮フラグ(1) 圧縮メソッド(1) 圧縮データ
+		rest := d[i+1:]
+		if len(rest) < 2 {
 			return "", false
 		}
-		defer zr.Close()
-		decoded, err := io.ReadAll(zr)
-		if err != nil {
-			return "", false
+		compFlag := rest[0]
+		// compMethod := rest[1]  // 通常は0（deflate）
+		compData := rest[2:]
+		
+		if compFlag == 1 {
+			// 圧縮されている場合
+			zr, err := zlib.NewReader(bytes.NewReader(compData))
+			if err != nil {
+				return "", false
+			}
+			defer zr.Close()
+			decoded, err := io.ReadAll(zr)
+			if err != nil {
+				return "", false
+			}
+			return string(decoded), true
+		} else {
+			// 圧縮されていない場合
+			return string(compData), true
 		}
-		return string(decoded), true
 	}
 
 	offset := 8
@@ -1660,12 +1674,12 @@ func addXMPToPNG(pngPath string, xmpData string) error {
 		offset = chunkEnd
 	}
 
-	// zTXtチャンク作成（圧縮フラグ=0, 圧縮方式=0, PNG仕様準拠）
+	// zTXtチャンク作成（圧縮フラグ=1（deflate圧縮）, 圧縮方式=0）
 	keyword := "XML:com.adobe.xmp"
 	var chunkBuf bytes.Buffer
 	chunkBuf.Write([]byte(keyword))
 	chunkBuf.WriteByte(0) // Null separator
-	chunkBuf.WriteByte(0) // Compression flag: 0=deflate
+	chunkBuf.WriteByte(1) // Compression flag: 1=deflate圧縮
 	chunkBuf.WriteByte(0) // Compression method: 0=deflate
 	var compBuf bytes.Buffer
 	zw := zlib.NewWriter(&compBuf)
@@ -1792,4 +1806,5 @@ func addXMPToWebP(webpPath string, xmpData string) error {
 	// ファイルに書き込み
 	return os.WriteFile(webpPath, finalData, 0644)
 }
+
 
