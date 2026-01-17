@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"flag"
 	"fmt"
 	"image"
 	"io"
 	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -386,14 +390,91 @@ func extractTextualMetadataFromWebP(data []byte) (string, error) {
 }
 
 func extractVRChatFromXMP(xmp string) (bool, string, string, string) {
-	return false, "", "", ""
+	// Returns found, worldID, worldDisplayName, authorID
+	dec := xml.NewDecoder(strings.NewReader(xmp))
+	const vrcNS = "http://ns.vrchat.com/vrc/1.0/"
+	var worldID, worldName, authorID string
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			break
+		}
+		switch se := tok.(type) {
+		case xml.StartElement:
+			if se.Name.Space == vrcNS {
+				switch se.Name.Local {
+				case "WorldID":
+					var v string
+					_ = dec.DecodeElement(&v, &se)
+					worldID = strings.TrimSpace(v)
+				case "WorldDisplayName":
+					var v string
+					_ = dec.DecodeElement(&v, &se)
+					worldName = strings.TrimSpace(v)
+				case "AuthorID":
+					var v string
+					_ = dec.DecodeElement(&v, &se)
+					authorID = strings.TrimSpace(v)
+				}
+			}
+		}
+	}
+	found := worldID != "" || worldName != "" || authorID != ""
+	return found, worldID, worldName, authorID
 }
 
+// XMPから撮影日を取得する
 func extractDateFromXMP(xmp string) string {
+	dec := xml.NewDecoder(strings.NewReader(xmp))
+	const xmpNS = "http://ns.adobe.com/xap/1.0/"
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			break
+		}
+		switch se := tok.(type) {
+		case xml.StartElement:
+			if se.Name.Space == xmpNS && se.Name.Local == "CreateDate" {
+				var v string
+				_ = dec.DecodeElement(&v, &se)
+				if v != "" {
+					return strings.TrimSpace(v)
+				}
+			}
+		}
+	}
 	return ""
 }
 
+// XMPから作者名を取得する
 func extractAuthorFromXMP(xmp string) string {
+	dec := xml.NewDecoder(strings.NewReader(xmp))
+	const xmpNS = "http://ns.adobe.com/xap/1.0/"
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			break
+		}
+		switch se := tok.(type) {
+		case xml.StartElement:
+			if se.Name.Space == xmpNS && se.Name.Local == "Author" {
+				var v string
+				_ = dec.DecodeElement(&v, &se)
+				if v != "" {
+					return strings.TrimSpace(v)
+				}
+			}
+		}
+	}
 	return ""
 }
 
@@ -450,10 +531,53 @@ func addMetadataToImage(imagePath string, date string, worldName string, authorN
 }
 
 func extractDateFromFilename(filePath string) string {
+	filename := filepath.Base(filePath)
+	
+	// パターン1: VRChat_2026-01-15_22-52-38.319_3840x2160
+	// パターン2: VRChat_2026-01-14_21-49-03.450_2048x1440
+	// パターン3: VRChat_1920x1080_2022-06-02_03-11-38.751
+	re1 := regexp.MustCompile(`VRChat_(?:\d+x\d+_)?(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2}-\d{2})`)
+	if matches := re1.FindStringSubmatch(filename); len(matches) > 2 {
+		return matches[1] + "T" + strings.ReplaceAll(matches[2], "-", ":")
+	}
+
+	// パターン: com.vrchat.oculus.quest-20220330-003003
+	re2 := regexp.MustCompile(`-(\d{8})-(\d{6})`)
+	if matches := re2.FindStringSubmatch(filename); len(matches) > 2 {
+		dateStr := matches[1]
+		timeStr := matches[2]
+		return dateStr[0:4] + "-" + dateStr[4:6] + "-" + dateStr[6:8] + "T" + 
+			timeStr[0:2] + ":" + timeStr[2:4] + ":" + timeStr[4:6]
+	}
+	
 	return ""
 }
 
 func formatDateAsYMD(dateStr string) string {
+	// ISO 8601 形式を解析: "2026-01-15T09:38:22.0000000+09:00"
+	// フォーマット: "2026-01-15 WED 09:38:22"
+	
+	if len(dateStr) >= 19 {
+		// 日付を解析
+		year := dateStr[0:4]
+		month := dateStr[5:7]
+		day := dateStr[8:10]
+		hour := dateStr[11:13]
+		minute := dateStr[14:16]
+		second := dateStr[17:19]
+		
+		// 曜日を計算
+		t, err := time.Parse("2006-01-02", dateStr[0:10])
+		var dayOfWeek string
+		if err == nil {
+			dayOfWeek = t.Format("Mon")
+			dayOfWeek = strings.ToUpper(dayOfWeek)
+		} else {
+			dayOfWeek = "???"
+		}
+		
+		return fmt.Sprintf("%s-%s-%s %s %s:%s:%s", year, month, day, dayOfWeek, hour, minute, second)
+	}
 	return dateStr
 }
 
