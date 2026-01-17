@@ -23,6 +23,12 @@ import (
 	_ "image/jpeg"
 
 	"github.com/chai2010/webp"
+	"github.com/golang/freetype"
+	"github.com/golang/freetype/truetype"
+	"github.com/shogo82148/qrcode/rmqr"
+	"github.com/srwiley/oksvg"
+	"github.com/srwiley/rasterx"
+	xdraw "golang.org/x/image/draw"
 	_ "golang.org/x/image/webp"
 )
 
@@ -709,7 +715,13 @@ func addMetadataToImage(imagePath string, date string, worldName string, authorN
 		worldURL = ""
 	}
 	
-	// TODO: addTextToImage の呼び出し
+	// テキストとメタデータを描画
+	isDark := isDarkImage(img)
+	textColor := color.White
+	if !isDark {
+		textColor = color.Black
+	}
+	addTextToImage(newImg, date, worldName, authorName, authorID, worldURL, marginTop, newWidth, newHeight, textColor, bgColor, isDark, worldURL != "")
 	
 	outputDir := filepath.Join(filepath.Dir(imagePath), "annotated")
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
@@ -800,10 +812,332 @@ func formatDateAsYMD(dateStr string) string {
 	return dateStr
 }
 
+// rMQRコード（長方形QRコード）を生成
+// shogo82148/qrcode/rmqrパッケージを使用
 func generateRMQR(url string, isDark bool) (image.Image, error) {
-	return nil, errors.New("not implemented")
+	// rMQRコード（Rectangular Micro QR Code）を生成
+	// rmqr.Encode関数を使用してrMQRコードを生成
+	qrImage, err := rmqr.Encode(
+		[]byte(url),
+		rmqr.WithLevel(rmqr.LevelM),
+	)
+	if err != nil {
+		return nil, err
+	}
+	
+	// 黒背景の場合は反転
+	if isDark {
+		return invertImage(qrImage), nil
+	}
+	
+	return qrImage, nil
 }
 
+// 画像を反転する（黒と白を入れ替える）
 func invertImage(img image.Image) image.Image {
-	return img
+	bounds := img.Bounds()
+	inverted := image.NewRGBA(bounds)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			r, g, b, a := img.At(x, y).RGBA()
+			// 反転: 各値を 255 - 値 にする (16ビット値を8ビットに変換してから反転)
+			inverted.SetRGBA(x, y, color.RGBA{
+				R: 255 - uint8(r>>8),
+				G: 255 - uint8(g>>8),
+				B: 255 - uint8(b>>8),
+				A: uint8(a >> 8),
+			})
+		}
+	}
+	return inverted
+}
+
+// SVGアイコンを読み込んで、指定された色に置き換えて、画像として返す
+// ファイル名パターン: icon/<name>_24dp_434343.svg または icon/<name>.svg
+// 元の色(#434343)を指定色に置き換え、20x20にリサイズして返す
+func loadSVGIcon(iconName, colorHex string) (image.Image, error) {
+	// ファイル名マッピング
+	fileNameMap := map[string]string{
+		"calendar": "calendar_today_24dp_434343.svg",
+		"camera":   "photo_camera_24dp_434343.svg",
+		"location": "location_pin_24dp_434343.svg",
+		"person":   "person_24dp_434343.svg",
+		"world":    "public_24dp_434343.svg",
+	}
+	
+	svgFileName := fileNameMap[iconName]
+	if svgFileName == "" {
+		svgFileName = iconName + ".svg"
+	}
+	
+	iconPath := filepath.Join("icon", svgFileName)
+	
+	// SVGファイルを読み込む
+	svgFile, err := os.Open(iconPath)
+	if err != nil {
+		// アイコンが見つからない場合は空の白い画像を返す
+		emptyImg := image.NewRGBA(image.Rect(0, 0, 20, 20))
+		draw.Draw(emptyImg, emptyImg.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
+		return emptyImg, nil
+	}
+	defer svgFile.Close()
+	
+	// SVGの内容を読む
+	svgData, err := io.ReadAll(svgFile)
+	if err != nil {
+		emptyImg := image.NewRGBA(image.Rect(0, 0, 20, 20))
+		draw.Draw(emptyImg, emptyImg.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
+		return emptyImg, nil
+	}
+	
+	// 色を置き換える（#434343 -> 指定色）
+	svgContent := string(svgData)
+	colorHexLower := strings.ToLower(colorHex)
+	
+	// fill属性内の色を置き換え
+	svgContent = strings.ReplaceAll(svgContent, "fill=\"#434343\"", "fill=\""+colorHexLower+"\"")
+	// 全体の色属性を置き換え（viewBoxやfill属性なしの場合）
+	svgContent = strings.ReplaceAll(svgContent, "#434343", colorHexLower)
+	
+	// SVGをパースしてRasterizeする
+	icon, err := oksvg.ReadIconStream(strings.NewReader(svgContent))
+	if err != nil {
+		emptyImg := image.NewRGBA(image.Rect(0, 0, 20, 20))
+		draw.Draw(emptyImg, emptyImg.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
+		return emptyImg, nil
+	}
+	
+	// 20x20のサイズに設定
+	icon.SetTarget(0, 0, 20, 20)
+	
+	// RGBAイメージにレンダリング
+	iconImg := image.NewRGBA(image.Rect(0, 0, 20, 20))
+	rasterizer := rasterx.NewDasher(20, 20, rasterx.NewScannerGV(20, 20, iconImg, iconImg.Bounds()))
+	icon.Draw(rasterizer, 1.0)
+	
+	return iconImg, nil
+}
+
+// addTextToImageはマージン部分にテキスト情報とQRコードを描画
+// date: ISO8601形式またはYYYY-MM-DDTHH:MM:SS形式
+// worldName, authorName, worldURL, authorID: メタデータ
+func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worldURL string, marginTop, origWidth, origHeight int, textColor, bgColor color.Color, isDark, needsQR bool) error {
+	if marginTop <= 0 {
+		return nil // マージンがない場合は何もしない
+	}
+	
+	// フォント読み込み（標準フォント）
+	fontPath := "C:\\Windows\\Fonts\\segoeui.ttf"
+	if _, err := os.Stat(fontPath); os.IsNotExist(err) {
+		fontPath = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+	}
+	fontData, err := os.ReadFile(fontPath)
+	if err != nil {
+		return nil // フォントが見つからない場合はスキップ
+	}
+	font, err := truetype.Parse(fontData)
+	if err != nil {
+		return nil
+	}
+	
+	// モノスペースフォント読み込み（日時表示用）
+	monoFontPath := "C:\\Windows\\Fonts\\consola.ttf"
+	if _, err := os.Stat(monoFontPath); os.IsNotExist(err) {
+		monoFontPath = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
+	}
+	monoFontData, err := os.ReadFile(monoFontPath)
+	var monoFont *truetype.Font
+	if err == nil {
+		monoFont, _ = truetype.Parse(monoFontData)
+	}
+	
+	if monoFont == nil {
+		monoFont = font // フォントが見つからない場合は標準フォントを使用
+	}
+	
+	// テキスト描画用のコンテキスト（日時）
+	c := freetype.NewContext()
+	c.SetDPI(72)
+	c.SetFont(monoFont)
+	c.SetFontSize(14)
+	c.SetSrc(image.NewUniform(textColor))
+	c.SetDst(img)
+	c.SetClip(img.Bounds())
+	
+	// 日時表示（左側）
+	formattedDate := formatDateAsYMD(date)
+	pt := freetype.Pt(20, marginTop-20)
+	if _, err := c.DrawString(formattedDate, pt); err != nil {
+		// エラーが出ても続行
+	}
+	
+	// ワールド情報が存在する場合のみ描画
+	if worldName != "" {
+		// メタデータアイコンとテキストを描画
+		c.SetFont(font)
+		c.SetFontSize(11)
+		
+		// ワールド名
+		if worldIcon, err := loadSVGIcon("world", "FFFFFF"); err == nil {
+			draw.Draw(img, image.Rect(20, marginTop-45, 40, marginTop-25), worldIcon, image.Point{}, draw.Over)
+		}
+		worldText := "World: " + worldName
+		if len(worldText) > 50 {
+			worldText = worldText[:47] + "..."
+		}
+		pt = freetype.Pt(50, marginTop-30)
+		c.DrawString(worldText, pt)
+		
+		// 作成者名
+		if authorIcon, err := loadSVGIcon("camera", "FFFFFF"); err == nil {
+			draw.Draw(img, image.Rect(20, marginTop-60, 40, marginTop-40), authorIcon, image.Point{}, draw.Over)
+		}
+		authorText := "Author: " + authorName
+		if len(authorText) > 50 {
+			authorText = authorText[:47] + "..."
+		}
+		pt = freetype.Pt(50, marginTop-45)
+		c.DrawString(authorText, pt)
+	}
+	
+	// QRコード生成と描画
+	if needsQR && worldURL != "" {
+		qrImg, err := generateRMQR(worldURL, isDark)
+		if err == nil {
+			// QRコードを右上に配置（3倍拡大）
+			qrBounds := qrImg.Bounds()
+			qrSize := (qrBounds.Max.X - qrBounds.Min.X) * 3
+			qrX := origWidth - qrSize - 20
+			qrY := 15
+			
+			// QRコードをスケーリング
+			scaledQR := image.NewRGBA(image.Rect(0, 0, qrSize, qrSize))
+			xdraw.ApproxBiLinear.Scale(scaledQR, scaledQR.Bounds(), qrImg, qrImg.Bounds(), draw.Over, nil)
+			
+			// イメージに描画
+			draw.Draw(img, image.Rect(qrX, qrY, qrX+qrSize, qrY+qrSize), scaledQR, image.Point{}, draw.Over)
+		}
+	}
+	
+	return nil
+}
+
+// WebP ファイルにメタデータチャンクを追加（堅牢な実装）
+// VP8/VP8Lチャンク後に EXIF チャンクと XMP チャンクを挿入
+func addMetadataChunksToWebP(webpData []byte, exifData, xmpData []byte) ([]byte, error) {
+	if len(webpData) < 12 {
+		return nil, errors.New("invalid WebP file: too small")
+	}
+	
+	// RIFFヘッダ検証
+	if string(webpData[0:4]) != "RIFF" || string(webpData[8:12]) != "WEBP" {
+		return nil, errors.New("invalid WebP file: wrong header")
+	}
+	
+	// ファイルサイズ（12バイト以降）
+	fileSize := int(binary.LittleEndian.Uint32(webpData[4:8])) + 8
+	if len(webpData) < fileSize {
+		return nil, errors.New("invalid WebP file: truncated")
+	}
+	
+	// チャンクを探す
+	var result bytes.Buffer
+	result.Write(webpData[0:12]) // RIFFヘッダ＋"WEBP"
+	
+	pos := 12
+	metadataInserted := false
+	
+	for pos < len(webpData) {
+		if pos+8 > len(webpData) {
+			break
+		}
+		
+		chunkID := string(webpData[pos : pos+4])
+		chunkSize := int(binary.LittleEndian.Uint32(webpData[pos+4 : pos+8]))
+		chunkDataStart := pos + 8
+		chunkDataEnd := chunkDataStart + chunkSize
+		
+		// チャンク境界検証
+		if chunkDataEnd > len(webpData) {
+			return nil, errors.New("invalid WebP file: chunk size exceeds file boundary")
+		}
+		
+		// VP8/VP8L/VP8X チャンクの後にメタデータを挿入
+		if !metadataInserted && (chunkID == "VP8 " || chunkID == "VP8L" || chunkID == "VP8X") {
+			// メインチャンクを追加
+			result.Write(webpData[pos : chunkDataEnd])
+			
+			// パディング（奇数バイト）
+			if chunkSize%2 == 1 {
+				result.WriteByte(0)
+				pos = chunkDataEnd + 1
+			} else {
+				pos = chunkDataEnd
+			}
+			
+			// メタデータチャンクを追加
+			if len(exifData) > 0 {
+				if err := writeMetadataChunk(&result, "EXIF", exifData); err != nil {
+					return nil, err
+				}
+			}
+			
+			if len(xmpData) > 0 {
+				if err := writeMetadataChunk(&result, "XMP ", xmpData); err != nil {
+					return nil, err
+				}
+			}
+			
+			metadataInserted = true
+		} else if chunkID != "EXIF" && chunkID != "XMP " && chunkID != "ICCP" {
+			// 既存のEXIF/XMP/ICCPチャンクはスキップ（重複を避ける）
+			result.Write(webpData[pos : chunkDataEnd])
+			
+			// パディング
+			if chunkSize%2 == 1 {
+				result.WriteByte(0)
+				pos = chunkDataEnd + 1
+			} else {
+				pos = chunkDataEnd
+			}
+		} else {
+			// EXIFまたはXMPチャンクをスキップ
+			if chunkSize%2 == 1 {
+				pos = chunkDataEnd + 1
+			} else {
+				pos = chunkDataEnd
+			}
+		}
+	}
+	
+	// ファイルサイズを更新
+	resultBytes := result.Bytes()
+	newSize := len(resultBytes) - 8
+	binary.LittleEndian.PutUint32(resultBytes[4:8], uint32(newSize))
+	
+	return resultBytes, nil
+}
+
+// メタデータチャンクを書き込み（ヘルパー関数）
+func writeMetadataChunk(buf *bytes.Buffer, chunkID string, data []byte) error {
+	if len(chunkID) != 4 {
+		return errors.New("invalid chunk ID length")
+	}
+	
+	// チャンク ID
+	buf.WriteString(chunkID)
+	
+	// チャンクサイズ（リトルエンディアン）
+	size := uint32(len(data))
+	binary.Write(buf, binary.LittleEndian, size)
+	
+	// チャンクデータ
+	buf.Write(data)
+	
+	// パディング（奇数バイト）
+	if len(data)%2 == 1 {
+		buf.WriteByte(0)
+	}
+	
+	return nil
 }
