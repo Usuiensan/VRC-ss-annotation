@@ -1,0 +1,26 @@
+﻿<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:xmp="http://ns.adobe.com/xap/1.0/">
+    <rdf:Description>
+      <xmp:CreatorTool>VRChat</xmp:CreatorTool>
+      <xmp:Author>うすいえんさん</xmp:Author>
+      <xmp:CreateDate>2026-01-03T15:13:34.4759925+09:00</xmp:CreateDate>
+      <xmp:ModifyDate>2026-01-03T15:13:34.4759925+09:00</xmp:ModifyDate>
+    </rdf:Description>
+    <rdf:Description xmlns:tiff="http://ns.adobe.com/tiff/1.0/">
+      <tiff:DateTime>2026-01-03T15:13:34.4759925+09:00</tiff:DateTime>
+    </rdf:Description>
+    <rdf:Description xmlns:dc="http://purl.org/dc/elements/1.1/">
+      <dc:title>
+        <rdf:Alt>
+          <rdf:li xml:lang="x-default">
+          </rdf:li>
+        </rdf:Alt>
+      </dc:title>
+    </rdf:Description>
+    <rdf:Description xmlns:vrc="http://ns.vrchat.com/vrc/1.0/">
+      <vrc:WorldID>wrld_8fa2df16-9885-4c46-a804-5e64e3a44801</vrc:WorldID>
+      <vrc:WorldDisplayName>清楚ガーデン Ver․2</vrc:WorldDisplayName>
+      <vrc:AuthorID>usr_25b28b55-7235-4d2b-bfe5-87fad3d64187</vrc:AuthorID>
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>
