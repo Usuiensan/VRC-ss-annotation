@@ -29,6 +29,7 @@ import (
 	"github.com/srwiley/oksvg"
 	"github.com/srwiley/rasterx"
 	xdraw "golang.org/x/image/draw"
+	xfont "golang.org/x/image/font"
 	_ "golang.org/x/image/webp"
 )
 
@@ -852,8 +853,11 @@ func invertImage(img image.Image) image.Image {
 }
 
 // SVGアイコンを読み込んで、指定された色に置き換えて、画像として返す
-// 簡略版：SVGの色置き換え後、シンプルな方法でレンダリング
-func loadSVGIcon(iconName, colorHex string) (image.Image, error) {
+// targetSize は最終的な出力サイズ（ピクセル）。指定がない場合は 20px。
+func loadSVGIcon(iconName, colorHex string, targetSize int) (image.Image, error) {
+	if targetSize <= 0 {
+		targetSize = 20
+	}
 	// ファイル名マッピング
 	fileNameMap := map[string]string{
 		"calendar": "calendar_today_24dp_434343.svg",
@@ -873,14 +877,14 @@ func loadSVGIcon(iconName, colorHex string) (image.Image, error) {
 	// SVGファイルを読み込む
 	svgFile, err := os.Open(iconPath)
 	if err != nil {
-		return createColoredSquare(16, 16, colorHex), nil
+		return createColoredSquare(targetSize, targetSize, colorHex), nil
 	}
 	defer svgFile.Close()
 	
 	// SVGの内容を読む
 	svgData, err := io.ReadAll(svgFile)
 	if err != nil {
-		return createColoredSquare(16, 16, colorHex), nil
+		return createColoredSquare(targetSize, targetSize, colorHex), nil
 	}
 	
 	// 色を置き換える（#434343 -> 指定色）
@@ -896,14 +900,14 @@ func loadSVGIcon(iconName, colorHex string) (image.Image, error) {
 	// SVGをパースする
 	icon, err := oksvg.ReadIconStream(strings.NewReader(svgContent))
 	if err != nil {
-		return createColoredSquare(16, 16, colorHex), nil
+		return createColoredSquare(targetSize, targetSize, colorHex), nil
 	}
 	
-	// 32x32でレンダリング（スケーリング前提）
-	const renderSize = 32
+	// 高解像度でレンダリングした後に targetSize へスケーリング
+	renderSize := targetSize * 2
 	iconImg := image.NewRGBA(image.Rect(0, 0, renderSize, renderSize))
 	
-	// SVGのターゲットを32x32に設定
+	// SVGのターゲットを renderSize に設定
 	icon.SetTarget(0, 0, float64(renderSize), float64(renderSize))
 	
 	// Scannerの設定
@@ -913,8 +917,8 @@ func loadSVGIcon(iconName, colorHex string) (image.Image, error) {
 	// SVGを描画
 	icon.Draw(dasher, 1.0)
 	
-	// 32x32から20x20にリサイズ
-	scaled := image.NewRGBA(image.Rect(0, 0, 20, 20))
+	// renderSize から targetSize にリサイズ
+	scaled := image.NewRGBA(image.Rect(0, 0, targetSize, targetSize))
 	xdraw.ApproxBiLinear.Scale(scaled, scaled.Bounds(), iconImg, iconImg.Bounds(), draw.Src, nil)
 	
 	return scaled, nil
@@ -973,115 +977,159 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 	if err != nil {
 		return nil
 	}
-	
+
 	// レイアウト定数
+	marginHeight := marginTop
 	marginLeft := 20
-	iconSize := 20
-	spacing := 8   // icon と text の間
-	gapSize := 20  // section 間のギャップ
-	textBaseline := marginTop - 10
-	iconY := marginTop - 38
-	
-	// 日時フォーマット
-	formattedDate := formatDateAsYMD(date)
-	
-	// freetype コンテキスト設定
-	c := freetype.NewContext()
-	c.SetDPI(72)
-	c.SetFontSize(11)
-	c.SetSrc(image.NewUniform(textColor))
-	c.SetDst(img)
-	c.SetClip(img.Bounds())
-	
-	// カレンダーアイコン + 日時
+	iconSize := 28
+	iconSpacing := 12 // icon と text の間
+	gapSize := 28     // section 間のギャップ
+	mainFontSize := 32.0
+	rightPadding := 14
+
+	// フォントフェイス（測定用）
+	mainFace := truetype.NewFace(font, &truetype.Options{Size: mainFontSize, DPI: 72})
+	dateFace := mainFace
 	if monoFont != nil {
-		c.SetFont(monoFont)
-	} else {
-		c.SetFont(font)
+		dateFace = truetype.NewFace(monoFont, &truetype.Options{Size: mainFontSize, DPI: 72})
 	}
-	
-	currentX := marginLeft
-	
-	// アイコン1: カレンダー
-	if calIcon, err := loadSVGIcon("calendar", colorHex); err == nil {
-		iconRect := image.Rect(currentX, iconY, currentX+iconSize, iconY+iconSize)
-		draw.Draw(img, iconRect, calIcon, image.Point{}, draw.Over)
+
+	// 垂直配置（中央揃え）
+	metrics := mainFace.Metrics()
+	asc := metrics.Ascent.Round()
+	desc := metrics.Descent.Round()
+	textHeight := asc + desc
+	textBaseline := (marginHeight-textHeight)/2 + asc
+	if textBaseline < asc {
+		textBaseline = asc
 	}
-	currentX += iconSize + spacing
-	
-	// テキスト: 日時
-	pt := freetype.Pt(currentX, textBaseline)
-	c.DrawString(formattedDate, pt)
-        
-	// 日時幅を概算（16文字を11ptで表示 ≈ 110px）
-	currentX += 120
-	currentX += gapSize
-	
-	// ワールド情報がある場合のみアイコン＆テキスト描画
-	if worldName != "" {
-		// アイコン2: カメラ（作成者）
-		if cameraIcon, err := loadSVGIcon("camera", colorHex); err == nil {
-			iconRect := image.Rect(currentX, iconY, currentX+iconSize, iconY+iconSize)
-			draw.Draw(img, iconRect, cameraIcon, image.Point{}, draw.Over)
-		}
-		currentX += iconSize + spacing
-		
-		// テキスト: 作成者名（短縮）
-		authorText := authorName
-		if len(authorText) > 12 {
-			authorText = authorText[:9] + "..."
-		}
-		c.SetFont(font)
-		c.SetFontSize(10)
-		pt = freetype.Pt(currentX, textBaseline)
-		c.DrawString(authorText, pt)
-        
-		// 12文字を10ptで表示 ≈ 70px
-		currentX += 80
-		currentX += gapSize
-		
-		// アイコン3: ロケーション（ワールド）
-		if locIcon, err := loadSVGIcon("location", colorHex); err == nil {
-			iconRect := image.Rect(currentX, iconY, currentX+iconSize, iconY+iconSize)
-			draw.Draw(img, iconRect, locIcon, image.Point{}, draw.Over)
-		}
-		currentX += iconSize + spacing
-		
-		// テキスト: ワールド名（短縮）
-		worldText := worldName
-		if len(worldText) > 12 {
-			worldText = worldText[:9] + "..."
-		}
-		c.SetFont(font)
-		c.SetFontSize(10)
-		pt = freetype.Pt(currentX, textBaseline)
-		c.DrawString(worldText, pt)
+	iconY := (marginHeight - iconSize) / 2
+	if iconY < 0 {
+		iconY = 0
 	}
-	
-	// rMQRコード（右端に配置）
+
+	// QRコード領域を先に計算（NearestNeighbor で 3倍拡大）
+	availableRight := origWidth - rightPadding
+	var scaledQR *image.RGBA
+	var qrX, qrY, scaledWidth, scaledHeight int
 	if needsQR && worldURL != "" {
 		qrImg, err := generateRMQR(worldURL, isDark)
 		if err == nil {
 			qrBounds := qrImg.Bounds()
-			qrWidth := qrBounds.Max.X - qrBounds.Min.X
-			qrHeight := qrBounds.Max.Y - qrBounds.Min.Y
-			
-			// 2倍拡大（3倍だとぼやける）
-			scaleFactor := 2
-			scaledWidth := qrWidth * scaleFactor
-			scaledHeight := qrHeight * scaleFactor
-			
-			// 右上に配置
-			qrX := origWidth - scaledWidth - 15
-			qrY := marginTop - scaledHeight - 5
-			
-			// スケーリング（SrcAtop で品質維持）
-			scaledQR := image.NewRGBA(image.Rect(0, 0, scaledWidth, scaledHeight))
-			xdraw.ApproxBiLinear.Scale(scaledQR, scaledQR.Bounds(), qrImg, qrBounds, draw.Src, nil)
-			
-			// 描画
-			draw.Draw(img, image.Rect(qrX, qrY, qrX+scaledWidth, qrY+scaledHeight), scaledQR, image.Point{}, draw.Over)
+			scaleFactor := 3
+			scaledWidth = qrBounds.Dx() * scaleFactor
+			scaledHeight = qrBounds.Dy() * scaleFactor
+			qrX = origWidth - scaledWidth - rightPadding
+			if qrX < marginLeft {
+				qrX = marginLeft
+			}
+			qrY = (marginHeight - scaledHeight) / 2
+			if qrY < 0 {
+				qrY = 0
+			}
+			scaledQR = image.NewRGBA(image.Rect(0, 0, scaledWidth, scaledHeight))
+			xdraw.NearestNeighbor.Scale(scaledQR, scaledQR.Bounds(), qrImg, qrBounds, draw.Src, nil)
+			availableRight = qrX - 12
 		}
+	}
+	if availableRight < marginLeft {
+		availableRight = marginLeft
+	}
+
+	// freetype コンテキスト設定
+	c := freetype.NewContext()
+	c.SetDPI(72)
+	c.SetFontSize(mainFontSize)
+	c.SetSrc(image.NewUniform(textColor))
+	c.SetDst(img)
+	c.SetClip(img.Bounds())
+
+	measureWidth := func(face xfont.Face, s string) int {
+		return xfont.MeasureString(face, s).Round()
+	}
+	fitText := func(face xfont.Face, s string, maxWidth int) string {
+		if maxWidth <= 0 {
+			return ""
+		}
+		if measureWidth(face, s) <= maxWidth {
+			return s
+		}
+		ellipsis := "..."
+		ellipsisW := measureWidth(face, ellipsis)
+		if ellipsisW > maxWidth {
+			return ""
+		}
+		runes := []rune(s)
+		for i := len(runes); i > 0; i-- {
+			candidate := string(runes[:i]) + ellipsis
+			if measureWidth(face, candidate) <= maxWidth {
+				return candidate
+			}
+		}
+		return ""
+	}
+
+	formattedDate := formatDateAsYMD(date)
+	currentX := marginLeft
+
+	// アイコン1: カレンダー
+	if calIcon, err := loadSVGIcon("calendar", colorHex, iconSize); err == nil {
+		iconRect := image.Rect(currentX, iconY, currentX+iconSize, iconY+iconSize)
+		draw.Draw(img, iconRect, calIcon, image.Point{}, draw.Over)
+	}
+	currentX += iconSize + iconSpacing
+
+	// テキスト: 日時（等幅があれば優先）
+	dateText := fitText(dateFace, formattedDate, availableRight-currentX)
+	if dateText != "" {
+		if monoFont != nil {
+			c.SetFont(monoFont)
+		} else {
+			c.SetFont(font)
+		}
+		pt := freetype.Pt(currentX, textBaseline)
+		c.DrawString(dateText, pt)
+		currentX += measureWidth(dateFace, dateText) + gapSize
+	}
+
+	// ワールド情報がある場合のみアイコン＆テキスト描画
+	if worldName != "" && currentX < availableRight {
+		// アイコン2: カメラ（作成者）
+		if cameraIcon, err := loadSVGIcon("camera", colorHex, iconSize); err == nil {
+			iconRect := image.Rect(currentX, iconY, currentX+iconSize, iconY+iconSize)
+			draw.Draw(img, iconRect, cameraIcon, image.Point{}, draw.Over)
+		}
+		currentX += iconSize + iconSpacing
+		
+		// テキスト: 作成者名（可変幅）
+		authorText := fitText(mainFace, authorName, availableRight-currentX)
+		if authorText != "" {
+			c.SetFont(font)
+			pt := freetype.Pt(currentX, textBaseline)
+			c.DrawString(authorText, pt)
+			currentX += measureWidth(mainFace, authorText) + gapSize
+		}
+	}
+
+	// ワールド名セクション
+	if worldName != "" && currentX < availableRight {
+		if locIcon, err := loadSVGIcon("location", colorHex, iconSize); err == nil {
+			iconRect := image.Rect(currentX, iconY, currentX+iconSize, iconY+iconSize)
+			draw.Draw(img, iconRect, locIcon, image.Point{}, draw.Over)
+		}
+		currentX += iconSize + iconSpacing
+
+		worldText := fitText(mainFace, worldName, availableRight-currentX)
+		if worldText != "" {
+			c.SetFont(font)
+			pt := freetype.Pt(currentX, textBaseline)
+			c.DrawString(worldText, pt)
+		}
+	}
+
+	// rMQRコード（右側に配置）
+	if scaledQR != nil {
+		draw.Draw(img, image.Rect(qrX, qrY, qrX+scaledWidth, qrY+scaledHeight), scaledQR, image.Point{}, draw.Over)
 	}
 	
 	return nil
