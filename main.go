@@ -852,8 +852,7 @@ func invertImage(img image.Image) image.Image {
 }
 
 // SVGアイコンを読み込んで、指定された色に置き換えて、画像として返す
-// ファイル名パターン: icon/<name>_24dp_434343.svg または icon/<name>.svg
-// 元の色(#434343)を指定色に置き換え、20x20にリサイズして返す
+// 簡略版：SVGの色置き換え後、シンプルな方法でレンダリング
 func loadSVGIcon(iconName, colorHex string) (image.Image, error) {
 	// ファイル名マッピング
 	fileNameMap := map[string]string{
@@ -874,53 +873,65 @@ func loadSVGIcon(iconName, colorHex string) (image.Image, error) {
 	// SVGファイルを読み込む
 	svgFile, err := os.Open(iconPath)
 	if err != nil {
-		// アイコンが見つからない場合は空の白い画像を返す
-		emptyImg := image.NewRGBA(image.Rect(0, 0, 20, 20))
-		draw.Draw(emptyImg, emptyImg.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
-		return emptyImg, nil
+		return createColoredSquare(16, 16, colorHex), nil
 	}
 	defer svgFile.Close()
 	
 	// SVGの内容を読む
 	svgData, err := io.ReadAll(svgFile)
 	if err != nil {
-		emptyImg := image.NewRGBA(image.Rect(0, 0, 20, 20))
-		draw.Draw(emptyImg, emptyImg.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
-		return emptyImg, nil
+		return createColoredSquare(16, 16, colorHex), nil
 	}
 	
 	// 色を置き換える（#434343 -> 指定色）
 	svgContent := string(svgData)
+	colorHexUpper := strings.ToUpper(colorHex)
 	colorHexLower := strings.ToLower(colorHex)
 	
-	// fill属性内の色を置き換え
-	svgContent = strings.ReplaceAll(svgContent, "fill=\"#434343\"", "fill=\""+colorHexLower+"\"")
-	// 全体の色属性を置き換え（viewBoxやfill属性なしの場合）
-	svgContent = strings.ReplaceAll(svgContent, "#434343", colorHexLower)
+	// fill属性内の色を置き換え（複数パターン対応）
+	svgContent = strings.ReplaceAll(svgContent, "fill=\"#434343\"", "fill=\"#"+colorHexLower+"\"")
+	svgContent = strings.ReplaceAll(svgContent, "fill=\"#434343\"", "fill=\"#"+colorHexUpper+"\"")
+	svgContent = strings.ReplaceAll(svgContent, "#434343", "#"+colorHexLower)
 	
-	// SVGをパースしてRasterizeする
+	// SVGをパースする
 	icon, err := oksvg.ReadIconStream(strings.NewReader(svgContent))
 	if err != nil {
-		emptyImg := image.NewRGBA(image.Rect(0, 0, 20, 20))
-		draw.Draw(emptyImg, emptyImg.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
-		return emptyImg, nil
+		return createColoredSquare(16, 16, colorHex), nil
 	}
 	
-	// RGBAイメージにレンダリング（20x20）
-	iconImg := image.NewRGBA(image.Rect(0, 0, 20, 20))
+	// 32x32でレンダリング（スケーリング前提）
+	const renderSize = 32
+	iconImg := image.NewRGBA(image.Rect(0, 0, renderSize, renderSize))
 	
-	// 背景を透明に初期化
-	draw.Draw(iconImg, iconImg.Bounds(), &image.Uniform{color.Transparent}, image.Point{}, draw.Src)
+	// SVGのターゲットを32x32に設定
+	icon.SetTarget(0, 0, float64(renderSize), float64(renderSize))
 	
-	// SVG のサイズを 20x20 に設定
-	icon.SetTarget(0, 0, 20, 20)
+	// Scannerの設定
+	scanner := rasterx.NewScannerGV(renderSize, renderSize, iconImg, image.Rect(0, 0, renderSize, renderSize))
+	dasher := rasterx.NewDasher(renderSize, renderSize, scanner)
 	
-	// Scanner + Dasher でラスタライズ
-	s := rasterx.NewScannerGV(20, 20, iconImg, iconImg.Bounds())
-	d := rasterx.NewDasher(20, 20, s)
-	icon.Draw(d, 1.0)
+	// SVGを描画
+	icon.Draw(dasher, 1.0)
 	
-	return iconImg, nil
+	// 32x32から20x20にリサイズ
+	scaled := image.NewRGBA(image.Rect(0, 0, 20, 20))
+	xdraw.ApproxBiLinear.Scale(scaled, scaled.Bounds(), iconImg, iconImg.Bounds(), draw.Src, nil)
+	
+	return scaled, nil
+}
+
+// colorHex に基づいて色付きの正方形を作成（フォールバック）
+func createColoredSquare(width, height int, colorHex string) image.Image {
+	// 16進数カラーをRGBに変換
+	r, g, b := 0, 0, 0
+	if len(colorHex) >= 6 {
+		fmt.Sscanf(colorHex, "%02x%02x%02x", &r, &g, &b)
+	}
+	
+	c := color.RGBA{R: uint8(r), G: uint8(g), B: uint8(b), A: 255}
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	draw.Draw(img, img.Bounds(), &image.Uniform{c}, image.Point{}, draw.Src)
+	return img
 }
 
 // addTextToImageはマージン部分にテキスト情報を[icon] [date] [icon] [author] [icon] [world] ... [QR]レイアウトで描画
