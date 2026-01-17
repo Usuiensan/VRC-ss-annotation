@@ -1,0 +1,9 @@
+# VRChat画像ディレクトリ
+pic/
+
+# ビルド生成物
+main.exe
+main
+
+# アノテーション出力
+annotated/

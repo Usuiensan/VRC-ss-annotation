@@ -1,0 +1,26 @@
+﻿<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:xmp="http://ns.adobe.com/xap/1.0/">
+    <rdf:Description>
+      <xmp:CreatorTool>VRChat</xmp:CreatorTool>
+      <xmp:Author>うすいえんさん</xmp:Author>
+      <xmp:CreateDate>2026-01-10T11:24:55.6421602+09:00</xmp:CreateDate>
+      <xmp:ModifyDate>2026-01-10T11:24:55.6421602+09:00</xmp:ModifyDate>
+    </rdf:Description>
+    <rdf:Description xmlns:tiff="http://ns.adobe.com/tiff/1.0/">
+      <tiff:DateTime>2026-01-10T11:24:55.6421602+09:00</tiff:DateTime>
+    </rdf:Description>
+    <rdf:Description xmlns:dc="http://purl.org/dc/elements/1.1/">
+      <dc:title>
+        <rdf:Alt>
+          <rdf:li xml:lang="x-default">
+          </rdf:li>
+        </rdf:Alt>
+      </dc:title>
+    </rdf:Description>
+    <rdf:Description xmlns:vrc="http://ns.vrchat.com/vrc/1.0/">
+      <vrc:WorldID>wrld_9a3e7956-2997-40fb-93ba-f04204cdc763</vrc:WorldID>
+      <vrc:WorldDisplayName>SayaTown</vrc:WorldDisplayName>
+      <vrc:AuthorID>usr_25b28b55-7235-4d2b-bfe5-87fad3d64187</vrc:AuthorID>
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>
