@@ -977,10 +977,10 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 	// レイアウト定数
 	marginLeft := 20
 	iconSize := 20
-	spacing := 10 // icon と text の間
-	gapSize := 25 // section 間のギャップ
+	spacing := 8   // icon と text の間
+	gapSize := 20  // section 間のギャップ
 	textBaseline := marginTop - 10
-	iconY := marginTop - 35
+	iconY := marginTop - 38
 	
 	// 日時フォーマット
 	formattedDate := formatDateAsYMD(date)
@@ -988,7 +988,7 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 	// freetype コンテキスト設定
 	c := freetype.NewContext()
 	c.SetDPI(72)
-	c.SetFontSize(32)
+	c.SetFontSize(11)
 	c.SetSrc(image.NewUniform(textColor))
 	c.SetDst(img)
 	c.SetClip(img.Bounds())
@@ -1012,9 +1012,9 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 	// テキスト: 日時
 	pt := freetype.Pt(currentX, textBaseline)
 	c.DrawString(formattedDate, pt)
-	
-	// 日時幅を概算（固定フォント、16文字程度）
-	currentX += 200
+        
+	// 日時幅を概算（16文字を11ptで表示 ≈ 110px）
+	currentX += 120
 	currentX += gapSize
 	
 	// ワールド情報がある場合のみアイコン＆テキスト描画
@@ -1028,15 +1028,16 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 		
 		// テキスト: 作成者名（短縮）
 		authorText := authorName
-		if len(authorText) > 20 {
-			authorText = authorText[:17] + "..."
+		if len(authorText) > 12 {
+			authorText = authorText[:9] + "..."
 		}
 		c.SetFont(font)
-		c.SetFontSize(40)
+		c.SetFontSize(10)
 		pt = freetype.Pt(currentX, textBaseline)
 		c.DrawString(authorText, pt)
-		
-		currentX += 180
+        
+		// 12文字を10ptで表示 ≈ 70px
+		currentX += 80
 		currentX += gapSize
 		
 		// アイコン3: ロケーション（ワールド）
@@ -1048,15 +1049,13 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 		
 		// テキスト: ワールド名（短縮）
 		worldText := worldName
-		if len(worldText) > 20 {
-			worldText = worldText[:17] + "..."
+		if len(worldText) > 12 {
+			worldText = worldText[:9] + "..."
 		}
 		c.SetFont(font)
-		c.SetFontSize(40)
+		c.SetFontSize(10)
 		pt = freetype.Pt(currentX, textBaseline)
 		c.DrawString(worldText, pt)
-		
-		currentX += 180
 	}
 	
 	// rMQRコード（右端に配置）
@@ -1067,8 +1066,8 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 			qrWidth := qrBounds.Max.X - qrBounds.Min.X
 			qrHeight := qrBounds.Max.Y - qrBounds.Min.Y
 			
-			// 3倍拡大
-			scaleFactor := 3
+			// 2倍拡大（3倍だとぼやける）
+			scaleFactor := 2
 			scaledWidth := qrWidth * scaleFactor
 			scaledHeight := qrHeight * scaleFactor
 			
@@ -1076,9 +1075,9 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 			qrX := origWidth - scaledWidth - 15
 			qrY := marginTop - scaledHeight - 5
 			
-			// スケーリング
+			// スケーリング（SrcAtop で品質維持）
 			scaledQR := image.NewRGBA(image.Rect(0, 0, scaledWidth, scaledHeight))
-			xdraw.ApproxBiLinear.Scale(scaledQR, scaledQR.Bounds(), qrImg, qrBounds, draw.Over, nil)
+			xdraw.ApproxBiLinear.Scale(scaledQR, scaledQR.Bounds(), qrImg, qrBounds, draw.Src, nil)
 			
 			// 描画
 			draw.Draw(img, image.Rect(qrX, qrY, qrX+scaledWidth, qrY+scaledHeight), scaledQR, image.Point{}, draw.Over)
