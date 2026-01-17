@@ -9,6 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/draw"
@@ -89,7 +90,6 @@ func main() {
 	pretty := flag.Bool("pretty", false, "JSONを整形して出力します ( --json と併用 )")
 	noEscape := flag.Bool("no-escape", false, "JSON出力時にHTMLエスケープを無効化します（危険）")
 	ndjson := flag.Bool("ndjson", false, "JSON出力を1行ごとのNDJSONで出力します（--json と併用）")
-	verbose := flag.Bool("verbose", false, "詳細な人間向け出力を有効化します（--json時はstderrに出力）")
 	noHuman := flag.Bool("no-human", false, "人間向け出力を全て抑制します（--jsonと併用して純粋なJSONのみ出力する）")
 	annotate := flag.Bool("annotate", false, "メタデータを画像に追加して出力します")
 	autoAnnotate := flag.Bool("auto-annotate", false, "複数ファイルが指定された場合は自動的にアノテーションを有効化します")
@@ -115,7 +115,7 @@ func main() {
 		if *ndjson {
 			// Stream NDJSON: one JSON object per file, newline-delimited
 			for _, path := range flag.Args() {
-				meta, err := readVRChatExifPNG(path, *jsonOut, *rawOut, *pretty, *noEscape, *verbose, *noHuman)
+				meta, err := readVRChatExifPNG(path, true, *noHuman)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "エラー (%s): %v\n", path, err)
 					continue
@@ -136,7 +136,7 @@ func main() {
 		// Collect all metas into a JSON array
 		var all []map[string]interface{}
 		for _, path := range flag.Args() {
-			meta, err := readVRChatExifPNG(path, *jsonOut, *rawOut, *pretty, *noEscape, *verbose, *noHuman)
+			meta, err := readVRChatExifPNG(path, true, *noHuman)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "エラー (%s): %v\n", path, err)
 				continue
@@ -170,7 +170,7 @@ func main() {
 		worker := func() {
 			defer wg.Done()
 			for path := range jobs {
-				meta, err := readVRChatExifPNG(path, true, false, false, false, false, true)
+				meta, err := readVRChatExifPNG(path, true, true)
 				if err != nil {
 					msg := fmt.Sprintf("エラー (%s): %v", path, err)
 					fmt.Fprintln(os.Stderr, msg)
@@ -217,12 +217,16 @@ func main() {
 		}
 		close(jobs)
 		wg.Wait()
+		
+		// アノテーション完了後に待機
+		fmt.Println("\n数秒後に自動で終了します...")
+		time.Sleep(3 * time.Second)
 		return
 	}
 
 	for _, path := range flag.Args() {
 		fmt.Printf("\n--- ファイル: %s ---\n", path)
-		_, _ = readVRChatExifPNG(path, *jsonOut, *rawOut, *pretty, *noEscape, *verbose, *noHuman)
+		_, _ = readVRChatExifPNG(path, *jsonOut, *noHuman)
 	}
 
 	if !*jsonOut && !*rawOut && !*annotate {
@@ -632,7 +636,42 @@ func extractAuthorFromXMP(xmp string) string {
 	return ""
 }
 
-func readVRChatExifPNG(filename string, jsonOut, rawOut, pretty, noEscape, verbose, noHuman bool) (map[string]interface{}, error) {
+// formatXMLString formats XML string with proper indentation
+func formatXMLString(xmlStr string) string {
+	if xmlStr == "" {
+		return ""
+	}
+	
+	var buf bytes.Buffer
+	dec := xml.NewDecoder(strings.NewReader(xmlStr))
+	enc := xml.NewEncoder(&buf)
+	enc.Indent("", "  ")
+	
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			// XML parsing failed, return original string
+			return xmlStr
+		}
+		if err := enc.EncodeToken(tok); err != nil {
+			return xmlStr
+		}
+	}
+	if err := enc.Flush(); err != nil {
+		return xmlStr
+	}
+	
+	result := buf.String()
+	if result == "" {
+		return xmlStr
+	}
+	return result
+}
+
+func readVRChatExifPNG(filename string, jsonOut, noHuman bool) (map[string]interface{}, error) {
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ファイル読み込み失敗: %v\n", err)
@@ -752,7 +791,50 @@ func isDarkImage(img image.Image) bool {
 	return averageBrightness < 0.5 // 50%を閾値とする
 }
 
+// verifyMetadataIntegrity は元のファイルと出力ファイルのメタデータが完全一致しているかを確認
+func verifyMetadataIntegrity(origData []byte, outputPath string, isWebP bool) (bool, error) {
+	// 出力ファイルを読み込み
+	outputData, err := os.ReadFile(outputPath)
+	if err != nil {
+		return false, fmt.Errorf("出力ファイルの読み込みエラー: %v", err)
+	}
+
+	var origXMP, outputXMP string
+
+	if isWebP {
+		// WebP メタデータ抽出
+		origXMP2, _ := extractTextualMetadataFromWebP(origData)
+		origXMP = origXMP2
+		outputXMP2, _ := extractTextualMetadataFromWebP(outputData)
+		outputXMP = outputXMP2
+	} else {
+		// PNG メタデータ抽出
+		origXMP2, _ := extractTextualMetadataFromPNG(origData)
+		origXMP = origXMP2
+		outputXMP2, _ := extractTextualMetadataFromPNG(outputData)
+		outputXMP = outputXMP2
+	}
+
+	// メタデータが完全一致しているか確認
+	if origXMP != outputXMP {
+		return false, fmt.Errorf("メタデータ不一致: 元のサイズ=%d, 出力のサイズ=%d", len(origXMP), len(outputXMP))
+	}
+
+	if origXMP == "" {
+		// メタデータがない場合は警告だが続行
+		return true, nil
+	}
+
+	return true, nil
+}
+
 func addMetadataToImage(imagePath string, date string, worldName string, authorName string, authorID string, worldURL string) error {
+	// 元のファイルデータを読み込み（メタデータ取得用）
+	origData, err := os.ReadFile(imagePath)
+	if err != nil {
+		return err
+	}
+
 	// 画像を読み込む
 	file, err := os.Open(imagePath)
 	if err != nil {
@@ -841,7 +923,49 @@ func addMetadataToImage(imagePath string, date string, worldName string, authorN
 			}
 			defer outFile.Close()
 			_, err = outFile.Write(buf.Bytes())
-			return err
+			if err != nil {
+				return err
+			}
+			
+			// WebP 保存後に XMP メタデータを追加
+			xmpAdded := false
+			webpXMP, webpErr := extractTextualMetadataFromWebP(origData)
+			pngXMP, pngErr := extractTextualMetadataFromPNG(origData)
+			
+			fmt.Fprintf(os.Stderr, "DEBUG: WebP XMP抽出 - エラー: %v, サイズ: %d\n", webpErr, len(webpXMP))
+			fmt.Fprintf(os.Stderr, "DEBUG: PNG XMP抽出 - エラー: %v, サイズ: %d\n", pngErr, len(pngXMP))
+			
+			if webpErr == nil && webpXMP != "" {
+				fmt.Fprintf(os.Stderr, "DEBUG: WebP XMPを追加します\n")
+				if err := addXMPToWebP(outputPath, webpXMP); err != nil {
+					fmt.Fprintf(os.Stderr, "DEBUG: WebP XMP追加エラー: %v\n", err)
+					return err
+				}
+				xmpAdded = true
+			}
+			// PNG からの変換時は XMP を追加してみる
+			if !xmpAdded && pngErr == nil && pngXMP != "" {
+				fmt.Fprintf(os.Stderr, "DEBUG: PNG→WebP XMPを追加します\n")
+				if err := addXMPToWebP(outputPath, pngXMP); err != nil {
+					fmt.Fprintf(os.Stderr, "DEBUG: PNG→WebP XMP追加エラー: %v\n", err)
+					return err
+				}
+				xmpAdded = true
+			}
+			
+			// メタデータが追加されたかチェック
+			if !xmpAdded {
+				fmt.Fprintf(os.Stderr, "警告: プリントカメラ解像度WebP (%s) にメタデータがありません\n", imagePath)
+			} else {
+				fmt.Fprintf(os.Stderr, "DEBUG: WebP XMP追加完了\n")
+			}
+			
+			// メタデータ検証
+			if ok, verifyErr := verifyMetadataIntegrity(origData, outputPath, true); !ok {
+				fmt.Fprintf(os.Stderr, "DEBUG: WebP検証失敗: %v\n", verifyErr)
+				return fmt.Errorf("WebP メタデータ検証失敗: %v", verifyErr)
+			}
+			return nil
 		} else {
 			if strings.HasSuffix(strings.ToLower(outputPath), ".webp") {
 				outputPath = outputPath[:len(outputPath)-5] + ".png"
@@ -851,7 +975,49 @@ func addMetadataToImage(imagePath string, date string, worldName string, authorN
 				return err
 			}
 			defer outFile.Close()
-			return png.Encode(outFile, outImg)
+			if err := png.Encode(outFile, outImg); err != nil {
+				return err
+			}
+			
+			// PNG 保存後に XMP メタデータを追加
+			xmpAdded := false
+			pngXMP, pngErr := extractTextualMetadataFromPNG(origData)
+			webpXMP, webpErr := extractTextualMetadataFromWebP(origData)
+			
+			fmt.Fprintf(os.Stderr, "DEBUG: PNG XMP抽出 - エラー: %v, サイズ: %d\n", pngErr, len(pngXMP))
+			fmt.Fprintf(os.Stderr, "DEBUG: WebP XMP抽出 - エラー: %v, サイズ: %d\n", webpErr, len(webpXMP))
+			
+			if pngErr == nil && pngXMP != "" {
+				fmt.Fprintf(os.Stderr, "DEBUG: PNG XMPを追加します\n")
+				if err := addXMPToPNG(outputPath, pngXMP); err != nil {
+					fmt.Fprintf(os.Stderr, "DEBUG: PNG XMP追加エラー: %v\n", err)
+					return err
+				}
+				xmpAdded = true
+			}
+			// WebP からの変換時は XMP を追加してみる
+			if !xmpAdded && webpErr == nil && webpXMP != "" {
+				fmt.Fprintf(os.Stderr, "DEBUG: WebP→PNG XMPを追加します\n")
+				if err := addXMPToPNG(outputPath, webpXMP); err != nil {
+					fmt.Fprintf(os.Stderr, "DEBUG: WebP→PNG XMP追加エラー: %v\n", err)
+					return err
+				}
+				xmpAdded = true
+			}
+			
+			// メタデータが追加されたかチェック
+			if !xmpAdded {
+				fmt.Fprintf(os.Stderr, "警告: プリントカメラ解像度PNG (%s) にメタデータがありません\n", imagePath)
+			} else {
+				fmt.Fprintf(os.Stderr, "DEBUG: PNG XMP追加完了\n")
+			}
+			
+			// メタデータ検証
+			if ok, verifyErr := verifyMetadataIntegrity(origData, outputPath, false); !ok {
+				fmt.Fprintf(os.Stderr, "DEBUG: PNG検証失敗: %v\n", verifyErr)
+				return fmt.Errorf("PNG メタデータ検証失敗: %v", verifyErr)
+			}
+			return nil
 		}
 	}
 
@@ -908,7 +1074,28 @@ func addMetadataToImage(imagePath string, date string, worldName string, authorN
 		}
 		defer outFile.Close()
 		_, err = outFile.Write(buf.Bytes())
-		return err
+		if err != nil {
+			return err
+		}
+		
+		// WebP 保存後に XMP メタデータを追加
+		if xmp, err := extractTextualMetadataFromWebP(origData); err == nil && xmp != "" {
+			if err := addXMPToWebP(outputPath, xmp); err != nil {
+				return err
+			}
+		}
+		// PNG からの変換時は XMP を追加してみる
+		if xmp2, err := extractTextualMetadataFromPNG(origData); err == nil && xmp2 != "" {
+			if err := addXMPToWebP(outputPath, xmp2); err != nil {
+				return err
+			}
+		}
+		
+		// メタデータ検証
+		if ok, verifyErr := verifyMetadataIntegrity(origData, outputPath, true); !ok {
+			return fmt.Errorf("WebP メタデータ検証失敗: %v", verifyErr)
+		}
+		return nil
 	} else {
 		if strings.HasSuffix(strings.ToLower(outputPath), ".webp") {
 			outputPath = outputPath[:len(outputPath)-5] + ".png"
@@ -918,7 +1105,28 @@ func addMetadataToImage(imagePath string, date string, worldName string, authorN
 			return err
 		}
 		defer outFile.Close()
-		return png.Encode(outFile, newImg)
+		if err := png.Encode(outFile, newImg); err != nil {
+			return err
+		}
+		
+		// PNG 保存後に XMP メタデータを追加
+		if xmp, err := extractTextualMetadataFromPNG(origData); err == nil && xmp != "" {
+			if err := addXMPToPNG(outputPath, xmp); err != nil {
+				return err
+			}
+		}
+		// WebP からの変換時は XMP を追加してみる
+		if xmp2, err := extractTextualMetadataFromWebP(origData); err == nil && xmp2 != "" {
+			if err := addXMPToPNG(outputPath, xmp2); err != nil {
+				return err
+			}
+		}
+		
+		// メタデータ検証
+		if ok, verifyErr := verifyMetadataIntegrity(origData, outputPath, false); !ok {
+			return fmt.Errorf("PNG メタデータ検証失敗: %v", verifyErr)
+		}
+		return nil
 	}
 }
 
@@ -1420,4 +1628,173 @@ func writeMetadataChunk(buf *bytes.Buffer, chunkID string, data []byte) error {
 	}
 	
 	return nil
+}
+
+// addXMPToPNG はデコード済みの PNG ファイルに XMP メタデータ（zTXt チャンク）を追加
+func addXMPToPNG(pngPath string, xmpData string) error {
+	if xmpData == "" {
+		return nil
+	}
+
+	// PNG ファイルを読み込み
+	data, err := os.ReadFile(pngPath)
+	if err != nil {
+		return err
+	}
+
+	// PNG シグネチャ確認
+	if len(data) < 8 {
+		return errors.New("invalid PNG file")
+	}
+
+	// zTXt チャンク作成
+	keyword := "XML:com.adobe.xmp"
+	keywordBytes := []byte(keyword)
+	compFlag := byte(1) // 圧縮有効
+
+	// XMP データを zlib で圧縮
+	var compBuf bytes.Buffer
+	zw := zlib.NewWriter(&compBuf)
+	if _, err := zw.Write([]byte(xmpData)); err != nil {
+		return err
+	}
+	zw.Close()
+
+	// zTXt チャンク作成
+	var chunkBuf bytes.Buffer
+	chunkBuf.Write(keywordBytes)
+	chunkBuf.WriteByte(0) // Null separator
+	chunkBuf.WriteByte(compFlag)
+	chunkBuf.WriteByte(0) // Compression method (0 = deflate)
+	chunkBuf.Write(compBuf.Bytes())
+
+	chunkData := chunkBuf.Bytes()
+
+	// PNG ファイルを IEND の前に zTXt チャンクを挿入
+	// IEND チャンク（最後の 12 バイト）の位置を探す
+	pngData := make([]byte, len(data)+12+len(chunkData))
+	copy(pngData, data)
+
+	// 最後から IEND チャンク 12 バイト以前にチャンクを挿入
+	insertPos := len(data) - 12
+
+	// 新しいデータを構築
+	newData := make([]byte, 0, len(pngData)+12+len(chunkData))
+	newData = append(newData, data[:insertPos]...)
+
+	// zTXt チャンク追加
+	chunkLen := make([]byte, 4)
+	binary.BigEndian.PutUint32(chunkLen, uint32(len(chunkData)))
+	newData = append(newData, chunkLen...)
+	newData = append(newData, []byte("zTXt")...)
+	newData = append(newData, chunkData...)
+
+	// チャンク CRC 計算（PNG は IEEE 多項式を使う）
+	crcData := make([]byte, 0, 4+len(chunkData))
+	crcData = append(crcData, []byte("zTXt")...)
+	crcData = append(crcData, chunkData...)
+	crcVal := crc32.ChecksumIEEE(crcData)
+	crcBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(crcBytes, crcVal)
+	newData = append(newData, crcBytes...)
+
+	// IEND チャンク追加
+	newData = append(newData, data[insertPos:]...)
+
+	// ファイルに書き込み
+	return os.WriteFile(pngPath, newData, 0644)
+}
+
+// addXMPToWebP はデコード済みの WebP ファイルに XMP メタデータを追加
+func addXMPToWebP(webpPath string, xmpData string) error {
+	if xmpData == "" {
+		return nil
+	}
+
+	// WebP ファイルを読み込み
+	data, err := os.ReadFile(webpPath)
+	if err != nil {
+		return err
+	}
+
+	// WebP シグネチャ確認
+	if len(data) < 12 || string(data[0:4]) != "RIFF" || string(data[8:12]) != "WEBP" {
+		return errors.New("invalid WebP file")
+	}
+
+	// WebP チャンク構造
+	// RIFF ヘッダ (12 bytes)
+	// WEBP チャンク: VP8 / VP8L / VP8X...
+	// XMP チャンク: 'XMP ' サイズ データ (パディング)
+
+	// 既存の XMP チャンクを削除（あれば）
+	var newData bytes.Buffer
+	newData.Write(data[0:12]) // RIFF ヘッダをコピー
+
+	riffSize := int(binary.LittleEndian.Uint32(data[4:8]))
+	offset := 12
+	xmpAdded := false
+
+	for offset+8 <= len(data) && offset-8 < riffSize {
+		if offset+8 > len(data) {
+			break
+		}
+
+		chunkID := string(data[offset : offset+4])
+		chunkSize := int(binary.LittleEndian.Uint32(data[offset+4 : offset+8]))
+		chunkDataStart := offset + 8
+		chunkDataEnd := chunkDataStart + chunkSize
+
+		// パディング対応
+		paddedSize := chunkSize
+		if chunkSize%2 == 1 {
+			paddedSize++
+		}
+		nextOffset := offset + 8 + paddedSize
+
+		if chunkDataEnd > len(data) {
+			break
+		}
+
+		// XMP チャンクを削除して新しいものを追加
+		if chunkID == "XMP " {
+			if !xmpAdded {
+				// 新しい XMP チャンクを追加
+				xmpBytes := []byte(xmpData)
+				newData.Write([]byte("XMP "))
+				binary.Write(&newData, binary.LittleEndian, uint32(len(xmpBytes)))
+				newData.Write(xmpBytes)
+				if len(xmpBytes)%2 == 1 {
+					newData.WriteByte(0)
+				}
+				xmpAdded = true
+			}
+		} else if chunkID == "EXIF" {
+			newData.Write(data[offset : nextOffset])
+		} else {
+			// その他のチャンクはそのままコピー
+			newData.Write(data[offset : nextOffset])
+		}
+
+		offset = nextOffset
+	}
+
+	// XMP を追加していなければ追加
+	if !xmpAdded {
+		xmpBytes := []byte(xmpData)
+		newData.Write([]byte("XMP "))
+		binary.Write(&newData, binary.LittleEndian, uint32(len(xmpBytes)))
+		newData.Write(xmpBytes)
+		if len(xmpBytes)%2 == 1 {
+			newData.WriteByte(0)
+		}
+	}
+
+	// RIFF サイズを更新
+	finalData := newData.Bytes()
+	newRiffSize := len(finalData) - 8
+	binary.LittleEndian.PutUint32(finalData[4:8], uint32(newRiffSize))
+
+	// ファイルに書き込み
+	return os.WriteFile(webpPath, finalData, 0644)
 }
