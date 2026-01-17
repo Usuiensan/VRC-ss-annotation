@@ -906,13 +906,19 @@ func loadSVGIcon(iconName, colorHex string) (image.Image, error) {
 		return emptyImg, nil
 	}
 	
-	// 20x20のサイズに設定
+	// RGBAイメージにレンダリング（20x20）
+	iconImg := image.NewRGBA(image.Rect(0, 0, 20, 20))
+	
+	// 背景を透明に初期化
+	draw.Draw(iconImg, iconImg.Bounds(), &image.Uniform{color.Transparent}, image.Point{}, draw.Src)
+	
+	// SVG のサイズを 20x20 に設定
 	icon.SetTarget(0, 0, 20, 20)
 	
-	// RGBAイメージにレンダリング
-	iconImg := image.NewRGBA(image.Rect(0, 0, 20, 20))
-	rasterizer := rasterx.NewDasher(20, 20, rasterx.NewScannerGV(20, 20, iconImg, iconImg.Bounds()))
-	icon.Draw(rasterizer, 1.0)
+	// Scanner + Dasher でラスタライズ
+	s := rasterx.NewScannerGV(20, 20, iconImg, iconImg.Bounds())
+	d := rasterx.NewDasher(20, 20, s)
+	icon.Draw(d, 1.0)
 	
 	return iconImg, nil
 }
@@ -929,7 +935,7 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 	colorHex := fmt.Sprintf("%02X%02X%02X", r>>8, g>>8, b>>8)
 	
 	// フォント読み込み（日時表示用 - モノスペース）
-	monoFontPath := "C:\\Windows\\Fonts\\consola.ttf"
+	monoFontPath := "C:\\Users\\miwam\\AppData\\Local\\Microsoft\\Windows\\Fonts\\OCR-BK.otf"
 	if _, err := os.Stat(monoFontPath); os.IsNotExist(err) {
 		monoFontPath = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
 	}
@@ -944,7 +950,7 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 	}
 	
 	// 標準フォント読み込み
-	fontPath := "C:\\Windows\\Fonts\\segoeui.ttf"
+	fontPath := "C:\\Windows\\Fonts\\NotoSansJP-Regular.otf"
 	if _, err := os.Stat(fontPath); os.IsNotExist(err) {
 		fontPath = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 	}
@@ -1015,7 +1021,7 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 			authorText = authorText[:17] + "..."
 		}
 		c.SetFont(font)
-		c.SetFontSize(12)
+		c.SetFontSize(40)
 		pt = freetype.Pt(currentX, textBaseline)
 		c.DrawString(authorText, pt)
 		
@@ -1035,7 +1041,7 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 			worldText = worldText[:17] + "..."
 		}
 		c.SetFont(font)
-		c.SetFontSize(12)
+		c.SetFontSize(40)
 		pt = freetype.Pt(currentX, textBaseline)
 		c.DrawString(worldText, pt)
 		
