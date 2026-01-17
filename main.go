@@ -971,7 +971,7 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 	// freetype コンテキスト設定
 	c := freetype.NewContext()
 	c.SetDPI(72)
-	c.SetFontSize(14)
+	c.SetFontSize(32)
 	c.SetSrc(image.NewUniform(textColor))
 	c.SetDst(img)
 	c.SetClip(img.Bounds())
