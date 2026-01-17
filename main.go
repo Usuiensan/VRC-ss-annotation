@@ -937,7 +937,7 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 	// フォント読み込み（日時表示用 - モノスペース）
 	monoFontPath := "C:\\Users\\miwam\\AppData\\Local\\Microsoft\\Windows\\Fonts\\OCR-BK.otf"
 	if _, err := os.Stat(monoFontPath); os.IsNotExist(err) {
-		monoFontPath = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
+		monoFontPath = "C:\\Users\\miwam\\AppData\\Local\\Microsoft\\Windows\\Fonts\\MPLUSRounded1c-Medium.ttf"
 	}
 	monoFontData, err := os.ReadFile(monoFontPath)
 	if err != nil {
@@ -950,9 +950,9 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 	}
 	
 	// 標準フォント読み込み
-	fontPath := "C:\\Windows\\Fonts\\NotoSansJP-Regular.otf"
+	fontPath := "C:\\Windows\\Fonts\\BIZ UDゴシック\\BIZ-UDGothicR.ttc"
 	if _, err := os.Stat(fontPath); os.IsNotExist(err) {
-		fontPath = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+		fontPath = "C:\\Users\\miwam\\AppData\\Local\\Microsoft\\Windows\\Fonts\\MPLUSRounded1c-Medium.ttf"
 	}
 	fontData, err := os.ReadFile(fontPath)
 	if err != nil {
