@@ -519,6 +519,50 @@ func readVRChatExifPNG(filename string, jsonOut, rawOut, pretty, noEscape, verbo
 		}
 	}
 
+	// Try XMP (PNG)
+	if t, err := extractTextualMetadataFromPNG(data); err == nil {
+		meta["xmpRawPNG"] = t
+
+		// VRChat用メタデータも抽出
+		if ok, wid, wname, aid := extractVRChatFromXMP(t); ok {
+			meta["worldID"] = wid
+			meta["worldName"] = wname
+			meta["authorID"] = aid
+		}
+		// 撮影日・作者名も抽出
+		shootDate := extractDateFromXMP(t)
+		if shootDate != "" {
+			meta["shootDate"] = shootDate
+		}
+		authorName := extractAuthorFromXMP(t)
+		if authorName != "" {
+			meta["authorName"] = authorName
+		}
+	}
+	
+	// Try XMP (WebP)
+	if t2, err := extractTextualMetadataFromWebP(data); err == nil {
+		meta["xmpRawWebP"] = t2
+
+		// Extract VRChat-specific metadata from WebP XMP
+		if ok, wid, wname, aid := extractVRChatFromXMP(t2); ok {
+			meta["worldID"] = wid
+			meta["worldName"] = wname
+			meta["authorID"] = aid
+		}
+		
+		// Extract shoot date and author name
+		shootDate := extractDateFromXMP(t2)
+		if shootDate != "" {
+			meta["shootDate"] = shootDate
+		}
+		
+		authorName := extractAuthorFromXMP(t2)
+		if authorName != "" {
+			meta["authorName"] = authorName
+		}
+	}
+
 	return meta, nil
 }
 
