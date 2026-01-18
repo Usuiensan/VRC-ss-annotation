@@ -39,7 +39,13 @@ import (
 var logMutex sync.Mutex
 
 // コンフィグ: 撮影者プレースホルダー名（この値のとき撮影者セクションを省略）
-var placeholderAuthorName = "任意の名前"
+var placeholderAuthorName = ""
+
+// アノテーション出力ディレクトリのベースパス（空文字列の場合は画像と同じディレクトリ内の"annotated"を使用）
+var outputDirBase = ""
+
+// 低負荷モードフラグ
+var lowPowerMode = false
 
 // annotate.config.json を読み込み、プレースホルダー名を設定
 func loadConfig() {
@@ -66,7 +72,7 @@ func loadConfig() {
 func appendLog(message string) {
 	logMutex.Lock()
 	defer logMutex.Unlock()
-	logPath := "annotated/annotate.log"
+	logPath := "annotate.log"
 	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err == nil {
 		defer f.Close()
@@ -79,6 +85,14 @@ func appendLog(message string) {
 func isPrintCameraResolutionOnly(img image.Image) bool {
 	bounds := img.Bounds()
 	return bounds.Dx() == 2048 && bounds.Dy() == 1440
+}
+
+// 出力ディレクトリパスを取得（outputDirBaseが空の場合は画像と同じディレクトリ内の"annotated"を使用）
+func getOutputDir(imagePath string) string {
+	if outputDirBase != "" {
+		return outputDirBase
+	}
+	return filepath.Join(filepath.Dir(imagePath), "annotated")
 }
 
 func main() {
@@ -94,7 +108,18 @@ func main() {
 	annotate := flag.Bool("annotate", false, "メタデータを画像に追加して出力します")
 	autoAnnotate := flag.Bool("auto-annotate", false, "複数ファイルが指定された場合は自動的にアノテーションを有効化します")
 	threads := flag.Int("threads", runtime.NumCPU(), "並列処理するワーカー数（デフォルトはCPUコア数）")
+	outputDir := flag.String("output-dir", "", "アノテーション付き画像の出力ディレクトリ（指定なしの場合は画像ファイルと同じディレクトリ内のannotatedフォルダを作成）")
+	lowPower := flag.Bool("low-power", false, "低負荷モード：スレッド数を1に制限し、処理間に遅延を加えてPCへの負荷を減らします")
 	flag.Parse()
+
+	// グローバル変数に出力ディレクトリを設定
+	outputDirBase = *outputDir
+
+	// 低負荷モードの場合、スレッド数を1に制限
+	if *lowPower {
+		*threads = 1
+		lowPowerMode = true
+	}
 
 	if flag.NArg() < 1 {
 		fmt.Println("画像ファイルをドラッグ＆ドロップしてください。")
@@ -200,6 +225,10 @@ func main() {
 				msg := fmt.Sprintf("処理完了: %s", path)
 				fmt.Println(msg)
 				appendLog(msg)
+				// 低負荷モード時は処理後に遅延を加える
+				if lowPowerMode {
+					// time.Sleep(500 * time.Millisecond)
+				}
 			}
 		}
 		// start workers
@@ -792,7 +821,7 @@ func isDarkImage(img image.Image) bool {
 	// サンプリング: 全体の約10%を確認
 	sampleStep := 1
 	if w > 100 || h > 100 {
-		sampleStep = (w + 99) / 100
+		sampleStep = (w + 99) / 10
 	}
 
 	var totalBrightness float64
@@ -813,7 +842,7 @@ func isDarkImage(img image.Image) bool {
 	}
 
 	averageBrightness := totalBrightness / float64(sampleCount)
-	return averageBrightness < 0.5 // 50%を閾値とする
+	return averageBrightness < 0.01 // 閾値: 平均輝度が1%未満なら暗いと判定 基本は白背景
 }
 
 // verifyMetadataIntegrity は元のファイルと出力ファイルのメタデータが完全一致しているかを確認
@@ -881,7 +910,7 @@ func addMetadataToImage(imagePath string, date string, worldName string, authorN
 	if isPrintCameraResolutionOnly(img) {
 		if worldURL == "" {
 			// ワールド情報なし → 元画像をそのまま保存
-			outputDir := filepath.Join(filepath.Dir(imagePath), "annotated")
+			outputDir := getOutputDir(imagePath)
 			if err := os.MkdirAll(outputDir, 0755); err != nil {
 				return err
 			}
@@ -925,7 +954,7 @@ func addMetadataToImage(imagePath string, date string, worldName string, authorN
 			draw.Draw(outImg, bgRect, scaledQR, image.Point{}, draw.Over)
 		}
 		
-		outputDir := filepath.Join(filepath.Dir(imagePath), "annotated")
+		outputDir := getOutputDir(imagePath)
 		if err := os.MkdirAll(outputDir, 0755); err != nil {
 			return err
 		}
@@ -1045,6 +1074,7 @@ fmt.Fprintf(os.Stderr, "  [Metadata] WebP XMP: %s (%d bytes)\n", func() string {
 // 			
 			// メタデータ検証は暫定的に無効化（保存確認待ち）
 // 			return nil
+			return nil
 		}
 	}
 
@@ -1053,7 +1083,10 @@ fmt.Fprintf(os.Stderr, "  [Metadata] WebP XMP: %s (%d bytes)\n", func() string {
 	newWidth := width
 	newHeight := height + marginTop
 	var bgColor color.Color
-	if isDarkImage(img) {
+	// 2048x1440解像度の場合は白背景に固定
+	if isPrintCameraResolutionOnly(img) {
+		bgColor = color.White
+	} else if isDarkImage(img) {
 		bgColor = color.Black
 	} else {
 		bgColor = color.White
@@ -1077,7 +1110,7 @@ fmt.Fprintf(os.Stderr, "  [Metadata] WebP XMP: %s (%d bytes)\n", func() string {
 	}
 	addTextToImage(newImg, date, worldName, authorName, authorID, worldURL, marginTop, newWidth, newHeight, textColor, bgColor, isDark, worldURL != "")
 	
-	outputDir := filepath.Join(filepath.Dir(imagePath), "annotated")
+	outputDir := getOutputDir(imagePath)
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return err
 	}
@@ -1265,61 +1298,87 @@ func loadSVGIcon(iconName, colorHex string, targetSize int) (image.Image, error)
 		"person":   "person_24dp_434343.svg",
 		"world":    "public_24dp_434343.svg",
 	}
-	
+
 	svgFileName := fileNameMap[iconName]
 	if svgFileName == "" {
 		svgFileName = iconName + ".svg"
 	}
-	
-	iconPath := filepath.Join("icon", svgFileName)
-	
-	// SVGファイルを読み込む
-	svgFile, err := os.Open(iconPath)
-	if err != nil {
+
+	// 候補パスを順に探す（実行ファイルディレクトリ、ソースファイルディレクトリ、カレントワーキングディレクトリの順）
+	candidates := []string{}
+
+	// 1) 実行ファイルのディレクトリ
+	if exe, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exe)
+		candidates = append(candidates, filepath.Join(exeDir, "icon", svgFileName))
+	}
+
+	// 2) ソースファイルのディレクトリ（開発時に便利）
+	if _, file, _, ok := runtime.Caller(0); ok {
+		srcDir := filepath.Dir(file)
+		candidates = append(candidates, filepath.Join(srcDir, "icon", svgFileName))
+	}
+
+	// 3) カレントワーキングディレクトリ（従来の動作）
+	if wd, err := os.Getwd(); err == nil {
+		candidates = append(candidates, filepath.Join(wd, "icon", svgFileName))
+	}
+
+	// 4) 直接ファイル名（ユーザーが絶対パスを渡した場合など）
+	candidates = append(candidates, svgFileName)
+
+	var svgData []byte
+	for _, p := range candidates {
+		f, err := os.Open(p)
+		if err != nil {
+			continue
+		}
+		d, err := io.ReadAll(f)
+		f.Close()
+		if err != nil {
+			continue
+		}
+		svgData = d
+		break
+	}
+
+	if svgData == nil {
+		// 見つからない場合はフォールバックのカラースクエアを返す
 		return createColoredSquare(targetSize, targetSize, colorHex), nil
 	}
-	defer svgFile.Close()
-	
-	// SVGの内容を読む
-	svgData, err := io.ReadAll(svgFile)
-	if err != nil {
-		return createColoredSquare(targetSize, targetSize, colorHex), nil
-	}
-	
+
 	// 色を置き換える（#434343 -> 指定色）
 	svgContent := string(svgData)
-	colorHexUpper := strings.ToUpper(colorHex)
 	colorHexLower := strings.ToLower(colorHex)
-	
+
 	// fill属性内の色を置き換え（複数パターン対応）
 	svgContent = strings.ReplaceAll(svgContent, "fill=\"#434343\"", "fill=\"#"+colorHexLower+"\"")
-	svgContent = strings.ReplaceAll(svgContent, "fill=\"#434343\"", "fill=\"#"+colorHexUpper+"\"")
 	svgContent = strings.ReplaceAll(svgContent, "#434343", "#"+colorHexLower)
-	
+
 	// SVGをパースする
 	icon, err := oksvg.ReadIconStream(strings.NewReader(svgContent))
 	if err != nil {
 		return createColoredSquare(targetSize, targetSize, colorHex), nil
 	}
-	
+
 	// 高解像度でレンダリングした後に targetSize へスケーリング
 	renderSize := targetSize * 2
 	iconImg := image.NewRGBA(image.Rect(0, 0, renderSize, renderSize))
-	
+
 	// SVGのターゲットを renderSize に設定
 	icon.SetTarget(0, 0, float64(renderSize), float64(renderSize))
-	
+
 	// Scannerの設定
 	scanner := rasterx.NewScannerGV(renderSize, renderSize, iconImg, image.Rect(0, 0, renderSize, renderSize))
 	dasher := rasterx.NewDasher(renderSize, renderSize, scanner)
-	
+
 	// SVGを描画
 	icon.Draw(dasher, 1.0)
-	
+
 	// renderSize から targetSize にリサイズ
 	scaled := image.NewRGBA(image.Rect(0, 0, targetSize, targetSize))
 	xdraw.ApproxBiLinear.Scale(scaled, scaled.Bounds(), iconImg, iconImg.Bounds(), draw.Src, nil)
-	
+
 	return scaled, nil
 }
 
