@@ -47,6 +47,7 @@ VRCSSAnnotationTool.exe --json image.png
 ```
 
 **出力例**:
+
 ```json
 {
   "fileName": "VRChat_2026-01-18_12-34-56.789_3840x2160.png",
@@ -70,6 +71,8 @@ VRCSSAnnotationTool.exe --annotate image.png
 - 撮影者（中央）: Your Name
 - ワールド名（右側）: Example World
 - rMQR コード（右上）: ワールドURL
+
+> Note: For VRChat 'print camera' images at resolution **2048×1440**, only the QR code is added at the top-right on a **fixed white background** (no inversion on dark images); text annotations are omitted.
 ```
 
 #### 3. 複数ファイルを一括処理
@@ -86,15 +89,15 @@ VRCSSAnnotationTool.exe --auto-annotate image1.png image2.webp image3.jpg
 
 ## 🛠️ CLI オプション
 
-| オプション | 説明 | 例 |
-|-----------|------|-----|
-| `--json` | JSON 形式で出力 | `--json image.png` |
-| `--pretty` | JSON を整形 | `--json --pretty image.png` |
-| `--ndjson` | NDJSON ストリーミング | `--ndjson image1.png image2.png` |
-| `--annotate` | 注釈を追加して保存 | `--annotate image.png` |
-| `--auto-annotate` | 複数ファイル自動処理 | `--auto-annotate *.png` |
-| `--raw` | デバッグ用生データ表示 | `--raw image.png` |
-| `--verbose` | 詳細ログ表示 | `--verbose --annotate image.png` |
+| オプション        | 説明                   | 例                               |
+| ----------------- | ---------------------- | -------------------------------- |
+| `--json`          | JSON 形式で出力        | `--json image.png`               |
+| `--pretty`        | JSON を整形            | `--json --pretty image.png`      |
+| `--ndjson`        | NDJSON ストリーミング  | `--ndjson image1.png image2.png` |
+| `--annotate`      | 注釈を追加して保存     | `--annotate image.png`           |
+| `--auto-annotate` | 複数ファイル自動処理   | `--auto-annotate *.png`          |
+| `--raw`           | デバッグ用生データ表示 | `--raw image.png`                |
+| `--verbose`       | 詳細ログ表示           | `--verbose --annotate image.png` |
 
 ---
 
@@ -128,6 +131,7 @@ annotated/
 ```
 
 **log ファイル例**:
+
 ```
 [2026-01-18 12:34:56] Processing: image1.png
 [2026-01-18 12:34:57] [Metadata] PNG XMP extracted (1178 bytes)...
@@ -148,6 +152,7 @@ ERROR: Font not found
 **原因**: 日本語フォント（Meiryo, YuGothic など）がインストールされていない。
 
 **解決方法**:
+
 ```powershell
 # Windows 10/11 ならフォントをインストール
 # Control Panel → Fonts → "Noto Sans JP" をインストール
@@ -158,6 +163,7 @@ ERROR: Font not found
 **原因**: VRChat 標準出力ではない画像の可能性。
 
 **確認方法**:
+
 ```bash
 VRCSSAnnotationTool.exe --raw image.png
 ```
@@ -169,6 +175,7 @@ VRCSSAnnotationTool.exe --raw image.png
 **原因**: 背景判定の問題。
 
 **確認**:
+
 - 背景が真っ黒または真っ白か確認
 - 非常に大きい解像度（8K 以上）の場合は処理に時間がかかる
 
@@ -177,6 +184,7 @@ VRCSSAnnotationTool.exe --raw image.png
 **原因**: PNG が iTXt チャンク対応ではない（古いバージョンの可能性）。
 
 **確認**:
+
 ```powershell
 # PowerShell で XMP メタデータを確認
 .\check-xmp.ps1 annotated/image.png
@@ -189,6 +197,7 @@ VRCSSAnnotationTool.exe --raw image.png
 ### ✅ 完全実装済み（v1.0.0）
 
 #### メタデータ処理
+
 - [x] PNG メタデータ抽出（XMP, tEXt, iTXt, zTXt チャンク）
 - [x] WebP メタデータ抽出（XMP, EXIF）
 - [x] VRChat 固有フィールド抽出（WorldID, AuthorID など）
@@ -196,12 +205,14 @@ VRCSSAnnotationTool.exe --raw image.png
 - [x] **メタデータ処理進行状況表示** ⭐ NEW
 
 #### 画像処理
+
 - [x] 背景色自動判定
 - [x] テキスト描画（日本語対応）
 - [x] SVG アイコン処理
 - [x] rMQR コード生成
 
 #### 出力形式
+
 - [x] JSON 出力
 - [x] NDJSON ストリーミング
 - [x] PNG 出力
@@ -211,16 +222,16 @@ VRCSSAnnotationTool.exe --raw image.png
 
 ## 🧪 テスト結果
 
-| 解像度 | ファイル形式 | メタデータ永続化 | 実行時間 |
-|--------|-----------|-----------------|--------|
-| 3840x2160 | PNG | ✅ | 1.2s |
-| 2560x1440 | PNG | ✅ | 0.8s |
-| 1440x2560 | PNG | ✅ | 0.7s |
-| 1920x1080 | WebP | ✅ | 0.6s |
+| 解像度    | ファイル形式 | メタデータ永続化 | 実行時間 |
+| --------- | ------------ | ---------------- | -------- |
+| 3840x2160 | PNG          | ✅               | 1.2s     |
+| 2560x1440 | PNG          | ✅               | 0.8s     |
+| 1440x2560 | PNG          | ✅               | 0.7s     |
+| 1920x1080 | WebP         | ✅               | 0.6s     |
 
 **日本語メタデータ**: ✅ 完全対応  
 **Eagle 互換性**: ✅ 確認済み  
-**Adobe Bridge**: ✅ 確認済み  
+**Adobe Bridge**: ✅ 確認済み
 
 ---
 

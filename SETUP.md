@@ -10,12 +10,12 @@
 
 ### 動作確認環境
 
-| 項目 | 仕様 |
-|------|------|
-| OS | Windows 10/11 (64-bit) |
-| Go | 1.25.5 以上 |
-| RAM | 2GB 以上 |
-| ディスク空き容量 | 500MB 以上 |
+| 項目             | 仕様                   |
+| ---------------- | ---------------------- |
+| OS               | Windows 10/11 (64-bit) |
+| Go               | 1.25.5 以上            |
+| RAM              | 2GB 以上               |
+| ディスク空き容量 | 500MB 以上             |
 
 ### 必須ソフトウェア
 
@@ -95,6 +95,7 @@ go mod graph | head -20
 ```
 
 **インストール対象パッケージ**:
+
 - github.com/chai2010/webp
 - github.com/dsoprea/go-exif/v3
 - github.com/golang/freetype
@@ -126,6 +127,7 @@ go build -ldflags "-s -w -X main.version=1.0.0" -o VRCSSAnnotationTool.exe
 ```
 
 **ビルド結果**:
+
 ```
 VRCSSAnnotationTool.exe  (13MB 程度)
 ```
@@ -273,6 +275,7 @@ code --install-extension golang.go
 #### 3. 拡張パッケージをインストール
 
 VS Code で以下が自動インストールされます：
+
 - gopls（Go Language Server）
 - dlv（デバッガー）
 
@@ -286,18 +289,16 @@ code .
 
 ```json
 {
-    "go.lintOnSave": "package",
-    "go.lintTool": "golangci-lint",
-    "go.lintArgs": [
-        "--fast"
-    ],
-    "editor.formatOnSave": true,
-    "[go]": {
-        "editor.defaultFormatter": "golang.go",
-        "editor.codeActionsOnSave": {
-            "source.organizeImports": true
-        }
+  "go.lintOnSave": "package",
+  "go.lintTool": "golangci-lint",
+  "go.lintArgs": ["--fast"],
+  "editor.formatOnSave": true,
+  "[go]": {
+    "editor.defaultFormatter": "golang.go",
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": true
     }
+  }
 }
 ```
 
@@ -351,6 +352,7 @@ go build `
 ```
 
 バージョン確認：
+
 ```powershell
 .\VRCSSAnnotationTool.exe --version
 # Version: 1.0.0 (built: 2026-01-18, commit: a1b2c3d)
@@ -395,6 +397,7 @@ go build -o VRCSSAnnotationTool_mac_arm64
 ```
 
 **解決**:
+
 ```powershell
 # Go のインストールを確認
 go version
@@ -410,6 +413,7 @@ go: go.mod not found in current directory or any parent directory
 ```
 
 **解決**:
+
 ```powershell
 # リポジトリのルートディレクトリにいることを確認
 pwd
@@ -429,6 +433,7 @@ go: github.com/chai2010/webp: invalid version: unknown revision ...
 ```
 
 **解決**:
+
 ```powershell
 # go.sum をリセット
 rm go.sum
@@ -453,11 +458,13 @@ ERROR: Font not found
 ## 📚 参考資料
 
 ### 公式ドキュメント
+
 - [Go 公式サイト](https://golang.org/)
 - [Go モジュール ガイド](https://golang.org/wiki/Modules)
 - [Go ビルド ドキュメント](https://golang.org/doc/install)
 
 ### 関連パッケージ
+
 - [chai2010/webp](https://github.com/chai2010/webp)
 - [golang/freetype](https://github.com/golang/freetype)
 - [shogo82148/qrcode](https://github.com/shogo82148/qrcode)

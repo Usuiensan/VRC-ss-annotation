@@ -900,8 +900,8 @@ func addMetadataToImage(imagePath string, date string, worldName string, authorN
 		draw.Draw(outImg, bounds, img, bounds.Min, draw.Src)
 
 		// QR生成とスケーリング（NearestNeighborで3倍、右から62px）
-		isDark := isDarkImage(img)
-		qrImg, err := generateRMQR(worldURL, isDark)
+		// For print camera resolution (2048x1440) always use a white-background QR (no inversion)
+		qrImg, err := generateRMQR(worldURL, false)
 		if err == nil {
 			qrBounds := qrImg.Bounds()
 			scaleFactor := 3
