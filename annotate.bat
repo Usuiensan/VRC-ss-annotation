@@ -11,8 +11,8 @@ if "%~1"=="" (
 )
 
 REM すべての引数に対して --annotate フラグを付与して実行
-main.exe --annotate %*
-
+@REM echo 低負荷モードが有効です。処理を開始します...
+VRCSSAnnotationTool.exe --annotate --output-dir "E:\VRC-annotated-pic" %*
 REM 処理終了時に一瞬画面を表示（確認用）
 echo.
 echo 処理完了。このウィンドウを閉じてください...

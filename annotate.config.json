@@ -1,3 +1,35 @@
 {
-  "placeholderAuthorName": "うすいえんさん"
+  "placeholderAuthorName": "TestUser",
+  "outputDir": "./output_test",
+  "dateFormat": "2006-01-02 MON",
+  "fonts": {
+    "monoFont": "D:\\新しいフォルダー\\新しいフォルダー\\BIZUDPGothic-Regular.ttf",
+    "mainFont": "D:\\新しいフォルダー\\新しいフォルダー\\BIZUDPGothic-Regular.ttf",
+    "fallbackFonts": []
+  },
+  "iconPath": "./icon",
+  "layout": {
+    "marginTop": 69,
+    "marginLeft": 20,
+    "marginRight": 60,
+    "iconSize": 28,
+    "iconSpacing": 12,
+    "gapSize": 28,
+    "mainFontSize": 32
+  },
+  "colors": {
+    "textColorLight": "000000",
+    "textColorDark": "FFFFFF",
+    "backgroundColorLight": "FFFFFF",
+    "backgroundColorDark": "000000"
+  },
+  "image": {
+    "darkThreshold": 0.9,
+    "qrScaleFactor": 4,
+    "qrRightPadding": 56,
+    "webpCompressionQuality": 90,
+    "webpLossless": true,
+    "outputFormat": "webp",
+    "supportedInputExtensions": [".png", ".webp", ".jpg", ".jpeg"]
+  }
 }

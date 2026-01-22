@@ -1,0 +1,38 @@
+{
+  "placeholderAuthorName": "",
+  "outputDir": "",
+  "dateFormat": "2006-01-02 Mon 15:04:05",
+  "fonts": {
+    "monoFont": "C:\\Windows\\Fonts\\BIZ UDゴシック\\BIZ-UDGothicR.ttc",
+    "mainFont": "C:\\Windows\\Fonts\\BIZ UDゴシック\\BIZ-UDGothicR.ttc",
+    "fallbackFonts": [
+      "C:\\Users\\miwam\\AppData\\Local\\Microsoft\\Windows\\Fonts\\MPLUSRounded1c-Medium.ttf",
+      "C:\\Users\\miwam\\AppData\\Local\\Microsoft\\Windows\\Fonts\\OCR-BK.otf"
+    ]
+  },
+  "iconPath": "./icon",
+  "layout": {
+    "marginTop": 69,
+    "marginLeft": 20,
+    "marginRight": 60,
+    "iconSize": 28,
+    "iconSpacing": 12,
+    "gapSize": 28,
+    "mainFontSize": 32
+  },
+  "colors": {
+    "textColorLight": "000000",
+    "textColorDark": "FFFFFF",
+    "backgroundColorLight": "FFFFFF",
+    "backgroundColorDark": "000000"
+  },
+  "image": {
+    "darkThreshold": 0.01,
+    "qrScaleFactor": 3,
+    "qrRightPadding": 60,
+    "webpCompressionQuality": 100,
+    "webpLossless": true,
+    "outputFormat": "auto",
+    "supportedInputExtensions": [".png", ".webp", ".jpg", ".jpeg"]
+  }
+}

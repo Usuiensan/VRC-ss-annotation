@@ -38,35 +38,206 @@ import (
 
 var logMutex sync.Mutex
 
-// コンフィグ: 撮影者プレースホルダー名（この値のとき撮影者セクションを省略）
-var placeholderAuthorName = ""
+// グローバルコンフィグ構造体
+var appConfig *Config
 
-// アノテーション出力ディレクトリのベースパス（空文字列の場合は画像と同じディレクトリ内の"annotated"を使用）
-var outputDirBase = ""
+// Config はアプリケーション全体の設定を保持する構造体
+type Config struct {
+	PlaceholderAuthorName string         `json:"placeholderAuthorName"`
+	OutputDir             string         `json:"outputDir"`
+	DateFormat            string         `json:"dateFormat"`
+	Fonts                 FontConfig     `json:"fonts"`
+	IconPath              string         `json:"iconPath"`
+	Layout                LayoutConfig   `json:"layout"`
+	Colors                ColorConfig    `json:"colors"`
+	Image                 ImageConfig    `json:"image"`
+}
 
-// 低負荷モードフラグ
-var lowPowerMode = false
+type FontConfig struct {
+	MonoFont       string   `json:"monoFont"`
+	MainFont       string   `json:"mainFont"`
+	FallbackFonts  []string `json:"fallbackFonts"`
+}
 
-// annotate.config.json を読み込み、プレースホルダー名を設定
+type LayoutConfig struct {
+	MarginTop     int     `json:"marginTop"`
+	MarginLeft    int     `json:"marginLeft"`
+	MarginRight   int     `json:"marginRight"`
+	IconSize      int     `json:"iconSize"`
+	IconSpacing   int     `json:"iconSpacing"`
+	GapSize       int     `json:"gapSize"`
+	MainFontSize  float64 `json:"mainFontSize"`
+}
+
+type ColorConfig struct {
+	TextColorLight      string `json:"textColorLight"`
+	TextColorDark       string `json:"textColorDark"`
+	BackgroundColorLight string `json:"backgroundColorLight"`
+	BackgroundColorDark  string `json:"backgroundColorDark"`
+}
+
+type ImageConfig struct {
+	DarkThreshold            float64  `json:"darkThreshold"`
+	QRScaleFactor            int      `json:"qrScaleFactor"`
+	QRRightPadding           int      `json:"qrRightPadding"`
+	WebPCompressionQuality   int      `json:"webpCompressionQuality"`
+	WebPLossless             bool     `json:"webpLossless"`
+	OutputFormat             string   `json:"outputFormat"`
+	SupportedInputExtensions []string `json:"supportedInputExtensions"`
+}
+
+// デフォルト設定を返す
+func getDefaultConfig() *Config {
+	return &Config{
+		PlaceholderAuthorName: "",
+		OutputDir: "",
+		DateFormat: "2006-01-02 Mon 15:04:05",
+		Fonts: FontConfig{
+			MonoFont: "C:\\Windows\\Fonts\\BIZ UDゴシック\\BIZ-UDGothicR.ttc",
+			MainFont: "C:\\Windows\\Fonts\\BIZ UDゴシック\\BIZ-UDGothicR.ttc",
+			FallbackFonts: []string{
+				"C:\\Users\\miwam\\AppData\\Local\\Microsoft\\Windows\\Fonts\\MPLUSRounded1c-Medium.ttf",
+				"C:\\Users\\miwam\\AppData\\Local\\Microsoft\\Windows\\Fonts\\OCR-BK.otf",
+			},
+		},
+		IconPath: "./icon",
+		Layout: LayoutConfig{
+			MarginTop:    69,
+			MarginLeft:   20,
+			MarginRight:  60,
+			IconSize:     28,
+			IconSpacing:  12,
+			GapSize:      28,
+			MainFontSize: 32.0,
+		},
+		Colors: ColorConfig{
+			TextColorLight:       "000000",
+			TextColorDark:        "FFFFFF",
+			BackgroundColorLight: "FFFFFF",
+			BackgroundColorDark:  "000000",
+		},
+		Image: ImageConfig{
+			DarkThreshold:            0.01,
+			QRScaleFactor:            3,
+			QRRightPadding:           60,
+			WebPCompressionQuality:   100,
+			WebPLossless:             true,
+			OutputFormat:             "auto",
+			SupportedInputExtensions: []string{".png", ".webp", ".jpg", ".jpeg"},
+		},
+	}
+}
+
+// loadConfig は複数の候補ファイルから設定を読み込む
 func loadConfig() {
-	// 優先: annotate.config.json → 次点: config.json
+	// デフォルト設定で初期化
+	appConfig = getDefaultConfig()
+
+	// 優先順序: annotate.config.json → config.json → 環境変数で指定されたファイル
 	candidates := []string{"annotate.config.json", "config.json"}
+	
+	// 環境変数でコンフィグファイルパスが指定されている場合、先頭に追加
+	if envConfigPath := os.Getenv("VRCS_ANNOTATE_CONFIG"); envConfigPath != "" {
+		candidates = append([]string{envConfigPath}, candidates...)
+	}
+
 	for _, p := range candidates {
 		b, err := os.ReadFile(p)
 		if err != nil {
 			continue
 		}
-		var cfg struct {
-			PlaceholderAuthorName string `json:"placeholderAuthorName"`
+		var cfg Config
+		if err := json.Unmarshal(b, &cfg); err != nil {
+			appendLog(fmt.Sprintf("警告: コンフィグファイル解析エラー (%s): %v", p, err))
+			continue
 		}
-		if json.Unmarshal(b, &cfg) == nil {
-			s := strings.TrimSpace(cfg.PlaceholderAuthorName)
-			if s != "" {
-				placeholderAuthorName = s
-			}
-		}
-		break
+		// デフォルト設定とマージ（空の値はデフォルトを使用）
+		appConfig = mergeConfig(appConfig, &cfg)
+		appendLog(fmt.Sprintf("コンフィグファイル読み込み成功: %s", p))
+		return
 	}
+
+	// コンフィグファイルが見つからない場合は、デフォルト設定を使用
+	appendLog("コンフィグファイルが見つかりません。デフォルト設定を使用します。")
+}
+
+// mergeConfig はデフォルト設定を上書きしない（空でない値のみ上書き）
+func mergeConfig(def, override *Config) *Config {
+	if override.PlaceholderAuthorName != "" {
+		def.PlaceholderAuthorName = override.PlaceholderAuthorName
+	}
+	if override.OutputDir != "" {
+		def.OutputDir = override.OutputDir
+	}
+	if override.DateFormat != "" {
+		def.DateFormat = override.DateFormat
+	}
+	if override.Fonts.MonoFont != "" {
+		def.Fonts.MonoFont = override.Fonts.MonoFont
+	}
+	if override.Fonts.MainFont != "" {
+		def.Fonts.MainFont = override.Fonts.MainFont
+	}
+	if len(override.Fonts.FallbackFonts) > 0 {
+		def.Fonts.FallbackFonts = override.Fonts.FallbackFonts
+	}
+	if override.IconPath != "" {
+		def.IconPath = override.IconPath
+	}
+	if override.Layout.MarginTop > 0 {
+		def.Layout.MarginTop = override.Layout.MarginTop
+	}
+	if override.Layout.MarginLeft > 0 {
+		def.Layout.MarginLeft = override.Layout.MarginLeft
+	}
+	if override.Layout.MarginRight > 0 {
+		def.Layout.MarginRight = override.Layout.MarginRight
+	}
+	if override.Layout.IconSize > 0 {
+		def.Layout.IconSize = override.Layout.IconSize
+	}
+	if override.Layout.IconSpacing > 0 {
+		def.Layout.IconSpacing = override.Layout.IconSpacing
+	}
+	if override.Layout.GapSize > 0 {
+		def.Layout.GapSize = override.Layout.GapSize
+	}
+	if override.Layout.MainFontSize > 0 {
+		def.Layout.MainFontSize = override.Layout.MainFontSize
+	}
+	if override.Colors.TextColorLight != "" {
+		def.Colors.TextColorLight = override.Colors.TextColorLight
+	}
+	if override.Colors.TextColorDark != "" {
+		def.Colors.TextColorDark = override.Colors.TextColorDark
+	}
+	if override.Colors.BackgroundColorLight != "" {
+		def.Colors.BackgroundColorLight = override.Colors.BackgroundColorLight
+	}
+	if override.Colors.BackgroundColorDark != "" {
+		def.Colors.BackgroundColorDark = override.Colors.BackgroundColorDark
+	}
+	if override.Image.DarkThreshold > 0 {
+		def.Image.DarkThreshold = override.Image.DarkThreshold
+	}
+	if override.Image.QRScaleFactor > 0 {
+		def.Image.QRScaleFactor = override.Image.QRScaleFactor
+	}
+	if override.Image.QRRightPadding > 0 {
+		def.Image.QRRightPadding = override.Image.QRRightPadding
+	}
+	if override.Image.WebPCompressionQuality > 0 {
+		def.Image.WebPCompressionQuality = override.Image.WebPCompressionQuality
+	}
+	// WebPLosslessは明示的に設定を上書き（falseも含む）
+	def.Image.WebPLossless = override.Image.WebPLossless
+	if override.Image.OutputFormat != "" {
+		def.Image.OutputFormat = override.Image.OutputFormat
+	}
+	if len(override.Image.SupportedInputExtensions) > 0 {
+		def.Image.SupportedInputExtensions = override.Image.SupportedInputExtensions
+	}
+	return def
 }
 
 func appendLog(message string) {
@@ -81,16 +252,97 @@ func appendLog(message string) {
 	}
 }
 
+// loadFontFromPaths は複数のパスからフォントを読み込み、最初に見つかったものを返す
+func loadFontFromPaths(paths []string) []byte {
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		data, err := os.ReadFile(p)
+		if err == nil {
+			return data
+		}
+	}
+	return nil
+}
+
 // 指定解像度(2048x1440)か判定
 func isPrintCameraResolutionOnly(img image.Image) bool {
 	bounds := img.Bounds()
 	return bounds.Dx() == 2048 && bounds.Dy() == 1440
 }
 
+// determineOutputFormat は出力フォーマットを決定する
+// outputFormat が "auto" の場合は入力ファイルの拡張子から判定、
+// "png" または "webp" の場合はそれを使用する
+func determineOutputFormat(inputPath string, configFormat string) string {
+	if configFormat == "" || configFormat == "auto" {
+		// 入力ファイルの拡張子から判定
+		if strings.HasSuffix(strings.ToLower(inputPath), ".webp") {
+			return "webp"
+		}
+		return "png" // デフォルトは PNG
+	}
+	// コンフィグで指定されたフォーマットを使用
+	format := strings.ToLower(configFormat)
+	if format == "webp" || format == "png" {
+		return format
+	}
+	return "png" // 無効な値の場合は PNG
+}
+
+// isSupportedInputFile は入力ファイルが対応拡張子か判定する
+func isSupportedInputFile(filePath string, supportedExts []string) bool {
+	if len(supportedExts) == 0 {
+		// デフォルト対応拡張子
+		supportedExts = []string{".png", ".webp", ".jpg", ".jpeg"}
+	}
+	ext := strings.ToLower(filepath.Ext(filePath))
+	for _, supported := range supportedExts {
+		if ext == strings.ToLower(supported) {
+			return true
+		}
+	}
+	return false
+}
+
+// adjustOutputPath は出力フォーマットに応じてファイルパスの拡張子を調整する
+// 例: "image.png" + "webp" → "image.webp"
+func adjustOutputPath(outputPath string, outputFormat string) string {
+	if outputFormat == "" || outputFormat == "auto" {
+		return outputPath
+	}
+
+	format := strings.ToLower(outputFormat)
+	var newExt string
+	
+	if format == "webp" {
+		newExt = ".webp"
+	} else if format == "png" {
+		newExt = ".png"
+	} else {
+		return outputPath // 無効なフォーマットの場合は変更しない
+	}
+
+	// 現在の拡張子を取得（元のケースのまま）
+	oldExt := filepath.Ext(outputPath)
+
+	// 既に正しい拡張子の場合は変更しない（大文字小文字を区別しない比較）
+	if strings.ToLower(oldExt) == newExt {
+		return outputPath
+	}
+
+	// 拡張子を置換
+	if oldExt != "" {
+		return outputPath[:len(outputPath)-len(oldExt)] + newExt
+	}
+	return outputPath + newExt
+}
+
 // 出力ディレクトリパスを取得（outputDirBaseが空の場合は画像と同じディレクトリ内の"annotated"を使用）
 func getOutputDir(imagePath string) string {
-	if outputDirBase != "" {
-		return outputDirBase
+	if appConfig.OutputDir != "" {
+		return appConfig.OutputDir
 	}
 	return filepath.Join(filepath.Dir(imagePath), "annotated")
 }
@@ -112,13 +364,14 @@ func main() {
 	lowPower := flag.Bool("low-power", false, "低負荷モード：スレッド数を1に制限し、処理間に遅延を加えてPCへの負荷を減らします")
 	flag.Parse()
 
-	// グローバル変数に出力ディレクトリを設定
-	outputDirBase = *outputDir
+	// グローバル変数に出力ディレクトリを設定（CLIオプションがコンフィグを上書き）
+	if *outputDir != "" {
+		appConfig.OutputDir = *outputDir
+	}
 
 	// 低負荷モードの場合、スレッド数を1に制限
 	if *lowPower {
 		*threads = 1
-		lowPowerMode = true
 	}
 
 	if flag.NArg() < 1 {
@@ -226,7 +479,7 @@ func main() {
 				fmt.Println(msg)
 				appendLog(msg)
 				// 低負荷モード時は処理後に遅延を加える
-				if lowPowerMode {
+				if *lowPower {
 					// time.Sleep(500 * time.Millisecond)
 				}
 			}
@@ -248,8 +501,8 @@ func main() {
 		wg.Wait()
 		
 		// アノテーション完了後に待機
-		fmt.Println("\n数秒後に自動で終了します...")
-		time.Sleep(3 * time.Second)
+		// fmt.Println("\n数秒後に自動で終了します...")
+		// time.Sleep(3 * time.Second)
 		return
 	}
 
@@ -259,8 +512,8 @@ func main() {
 	}
 
 	if !*jsonOut && !*rawOut && !*annotate {
-		fmt.Println("\n数秒後に自動で終了します...")
-		time.Sleep(3 * time.Second)
+		// fmt.Println("\n数秒後に自動で終了します...")
+		// time.Sleep(3 * time.Second)
 	}
 }
 
@@ -842,7 +1095,7 @@ func isDarkImage(img image.Image) bool {
 	}
 
 	averageBrightness := totalBrightness / float64(sampleCount)
-	return averageBrightness < 0.01 // 閾値: 平均輝度が1%未満なら暗いと判定 基本は白背景
+	return averageBrightness < appConfig.Image.DarkThreshold
 }
 
 // verifyMetadataIntegrity は元のファイルと出力ファイルのメタデータが完全一致しているかを確認
@@ -928,19 +1181,19 @@ func addMetadataToImage(imagePath string, date string, worldName string, authorN
 		outImg := image.NewRGBA(bounds)
 		draw.Draw(outImg, bounds, img, bounds.Min, draw.Src)
 
-		// QR生成とスケーリング（NearestNeighborで3倍、右から62px）
+		// QR生成とスケーリング（NearestNeighborで設定値倍）
 		// For print camera resolution (2048x1440) always use a white-background QR (no inversion)
 		qrImg, err := generateRMQR(worldURL, false)
 		if err == nil {
 			qrBounds := qrImg.Bounds()
-			scaleFactor := 3
+			scaleFactor := appConfig.Image.QRScaleFactor
 			scaledWidth := qrBounds.Dx() * scaleFactor
 			scaledHeight := qrBounds.Dy() * scaleFactor
-			qrX := width - scaledWidth - 62
+			qrX := width - scaledWidth - appConfig.Image.QRRightPadding
 			if qrX < 0 {
 				qrX = 0
 			}
-			qrY := 10
+			qrY := 4
 			if qrY < 0 {
 				qrY = 0
 			}
@@ -959,14 +1212,21 @@ func addMetadataToImage(imagePath string, date string, worldName string, authorN
 			return err
 		}
 		outputPath := filepath.Join(outputDir, filepath.Base(imagePath))
-		isWebP := strings.HasSuffix(strings.ToLower(imagePath), ".webp")
+		
+		// 出力フォーマットを決定
+		outputFormat := determineOutputFormat(imagePath, appConfig.Image.OutputFormat)
+		isWebP := outputFormat == "webp"
+
+		// 出力フォーマットに応じて拡張子を調整
+		outputPath = adjustOutputPath(outputPath, outputFormat)
 		
 		if isWebP {
-			if !strings.HasSuffix(strings.ToLower(outputPath), ".webp") {
-				outputPath = outputPath + ".webp"
-			}
 			var buf bytes.Buffer
-			err = webp.Encode(&buf, outImg, &webp.Options{Lossless: true, Quality: 100})
+			quality := float32(appConfig.Image.WebPCompressionQuality)
+			if quality <= 0 || quality > 100 {
+				quality = 100
+			}
+			err = webp.Encode(&buf, outImg, &webp.Options{Lossless: appConfig.Image.WebPLossless, Quality: quality})
 			if err != nil {
 				return err
 			}
@@ -1116,14 +1376,20 @@ fmt.Fprintf(os.Stderr, "  [Metadata] WebP XMP: %s (%d bytes)\n", func() string {
 	}
 	outputPath := filepath.Join(outputDir, filepath.Base(imagePath))
 
-	// 拡張子判定
-	isWebP := strings.HasSuffix(strings.ToLower(imagePath), ".webp")
+	// 出力フォーマットを決定
+	outputFormat := determineOutputFormat(imagePath, appConfig.Image.OutputFormat)
+	isWebP := outputFormat == "webp"
+
+	// 出力フォーマットに応じて拡張子を調整
+	outputPath = adjustOutputPath(outputPath, outputFormat)
+
 	if isWebP {
-		if !strings.HasSuffix(strings.ToLower(outputPath), ".webp") {
-			outputPath = outputPath + ".webp"
-		}
 		var buf bytes.Buffer
-		err = webp.Encode(&buf, newImg, &webp.Options{Lossless: true, Quality: 100})
+		quality := float32(appConfig.Image.WebPCompressionQuality)
+		if quality <= 0 || quality > 100 {
+			quality = 100
+		}
+		err = webp.Encode(&buf, newImg, &webp.Options{Lossless: appConfig.Image.WebPLossless, Quality: quality})
 		if err != nil {
 			return err
 		}
@@ -1217,31 +1483,37 @@ func extractDateFromFilename(filePath string) string {
 	return ""
 }
 
-func formatDateAsYMD(dateStr string) string {
-	// ISO 8601 形式を解析: "2026-01-15T09:38:22.0000000+09:00"
-	// フォーマット: "2026-01-15 WED 09:38:22"
-	
-	if len(dateStr) >= 19 {
-		// 日付を解析
-		year := dateStr[0:4]
-		month := dateStr[5:7]
-		day := dateStr[8:10]
-		hour := dateStr[11:13]
-		minute := dateStr[14:16]
-		second := dateStr[17:19]
-		
-		// 曜日を計算
-		t, err := time.Parse("2006-01-02", dateStr[0:10])
-		var dayOfWeek string
-		if err == nil {
-			dayOfWeek = t.Format("Mon")
-			dayOfWeek = strings.ToUpper(dayOfWeek)
-		} else {
-			dayOfWeek = "???"
-		}
-		
-		return fmt.Sprintf("%s-%s-%s %s %s:%s:%s", year, month, day, dayOfWeek, hour, minute, second)
+func formatDateForDisplay(dateStr string) string {
+	// コンフィグで指定されたレイアウト（Go のレイアウト文字列）で日付を整形する。
+	// 例: "2006-01-02 Mon 15:04:05"
+	layout := strings.TrimSpace(appConfig.DateFormat)
+	useUpperWeekday := false
+	if layout == "" {
+		layout = "2006-01-02 Mon 15:04:05"
+		useUpperWeekday = true // 既存デフォルトに近い表記を維持
 	}
+
+	// よくある入力フォーマットを順に試す
+	candidates := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04:05",
+		"2006-01-02 15:04:05.000",
+		"2006-01-02",
+	}
+	for _, p := range candidates {
+		if t, err := time.Parse(p, dateStr); err == nil {
+			formatted := t.Format(layout)
+			if useUpperWeekday {
+				weekday := t.Format("Mon")
+				formatted = strings.ReplaceAll(formatted, weekday, strings.ToUpper(weekday))
+			}
+			return formatted
+		}
+	}
+
+	// パースできなければ元の文字列を返す
 	return dateStr
 }
 
@@ -1252,6 +1524,7 @@ func generateRMQR(url string, isDark bool) (image.Image, error) {
 	qrImage, err := rmqr.Encode(
 		[]byte(url),
 		rmqr.WithLevel(rmqr.LevelM),
+		rmqr.WithPriority(rmqr.PriorityHeight),
 	)
 	if err != nil {
 		return nil, err
@@ -1284,11 +1557,11 @@ func invertImage(img image.Image) image.Image {
 	return inverted
 }
 
-// SVGアイコンを読み込んで、指定された色に置き換えて、画像として返す
+// loadSVGIcon はSVGアイコンを読み込んで、指定された色に置き換えて、画像として返す
 // targetSize は最終的な出力サイズ（ピクセル）。指定がない場合は 20px。
 func loadSVGIcon(iconName, colorHex string, targetSize int) (image.Image, error) {
 	if targetSize <= 0 {
-		targetSize = 20
+		targetSize = appConfig.Layout.IconSize
 	}
 	// ファイル名マッピング
 	fileNameMap := map[string]string{
@@ -1304,27 +1577,32 @@ func loadSVGIcon(iconName, colorHex string, targetSize int) (image.Image, error)
 		svgFileName = iconName + ".svg"
 	}
 
-	// 候補パスを順に探す（実行ファイルディレクトリ、ソースファイルディレクトリ、カレントワーキングディレクトリの順）
+	// 候補パスを順に探す
 	candidates := []string{}
 
-	// 1) 実行ファイルのディレクトリ
+	// 1) コンフィグで指定されたパス
+	if appConfig.IconPath != "" {
+		candidates = append(candidates, filepath.Join(appConfig.IconPath, svgFileName))
+	}
+
+	// 2) 実行ファイルのディレクトリ
 	if exe, err := os.Executable(); err == nil {
 		exeDir := filepath.Dir(exe)
 		candidates = append(candidates, filepath.Join(exeDir, "icon", svgFileName))
 	}
 
-	// 2) ソースファイルのディレクトリ（開発時に便利）
+	// 3) ソースファイルのディレクトリ（開発時に便利）
 	if _, file, _, ok := runtime.Caller(0); ok {
 		srcDir := filepath.Dir(file)
 		candidates = append(candidates, filepath.Join(srcDir, "icon", svgFileName))
 	}
 
-	// 3) カレントワーキングディレクトリ（従来の動作）
+	// 4) カレントワーキングディレクトリ（従来の動作）
 	if wd, err := os.Getwd(); err == nil {
 		candidates = append(candidates, filepath.Join(wd, "icon", svgFileName))
 	}
 
-	// 4) 直接ファイル名（ユーザーが絶対パスを渡した場合など）
+	// 5) 直接ファイル名（ユーザーが絶対パスを渡した場合など）
 	candidates = append(candidates, svgFileName)
 
 	var svgData []byte
@@ -1408,27 +1686,19 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 	colorHex := fmt.Sprintf("%02X%02X%02X", r>>8, g>>8, b>>8)
 	
 	// フォント読み込み（日時表示用 - モノスペース）
-	monoFontPath := "C:\\Users\\miwam\\AppData\\Local\\Microsoft\\Windows\\Fonts\\OCR-BK.otf"
-	if _, err := os.Stat(monoFontPath); os.IsNotExist(err) {
-		monoFontPath = "C:\\Users\\miwam\\AppData\\Local\\Microsoft\\Windows\\Fonts\\MPLUSRounded1c-Medium.ttf"
-	}
-	monoFontData, err := os.ReadFile(monoFontPath)
-	if err != nil {
-		// フォントなくても続行
-		monoFontData = nil
-	}
+	monoFontData := loadFontFromPaths([]string{appConfig.Fonts.MonoFont})
 	var monoFont *truetype.Font
 	if monoFontData != nil {
 		monoFont, _ = truetype.Parse(monoFontData)
 	}
 	
 	// 標準フォント読み込み
-	fontPath := "C:\\Windows\\Fonts\\BIZ UDゴシック\\BIZ-UDGothicR.ttc"
-	if _, err := os.Stat(fontPath); os.IsNotExist(err) {
-		fontPath = "C:\\Users\\miwam\\AppData\\Local\\Microsoft\\Windows\\Fonts\\MPLUSRounded1c-Medium.ttf"
+	fontData := loadFontFromPaths([]string{appConfig.Fonts.MainFont})
+	if fontData == nil {
+		// フォントが見つからない場合はフォールバック
+		fontData = loadFontFromPaths(appConfig.Fonts.FallbackFonts)
 	}
-	fontData, err := os.ReadFile(fontPath)
-	if err != nil {
+	if fontData == nil {
 		return nil
 	}
 	font, err := truetype.Parse(fontData)
@@ -1436,14 +1706,14 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 		return nil
 	}
 
-	// レイアウト定数
+	// レイアウト設定をコンフィグから取得
 	marginHeight := marginTop
-	marginLeft := 20
-	iconSize := 28
-	iconSpacing := 12 // icon と text の間
-	gapSize := 28     // section 間のギャップ
-	mainFontSize := 32.0
-	rightPadding := 60
+	marginLeft := appConfig.Layout.MarginLeft
+	iconSize := appConfig.Layout.IconSize
+	iconSpacing := appConfig.Layout.IconSpacing
+	gapSize := appConfig.Layout.GapSize
+	mainFontSize := appConfig.Layout.MainFontSize
+	rightPadding := appConfig.Layout.MarginRight
 
 	// フォントフェイス（測定用）
 	mainFace := truetype.NewFace(font, &truetype.Options{Size: mainFontSize, DPI: 72})
@@ -1466,7 +1736,7 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 		iconY = 0
 	}
 
-	// QRコード領域を先に計算（NearestNeighbor で 3倍拡大）
+	// QRコード領域を先に計算（スケーリング設定を使用）
 	availableRight := origWidth - rightPadding
 	var scaledQR *image.RGBA
 	var qrX, qrY, scaledWidth, scaledHeight int
@@ -1474,10 +1744,10 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 		qrImg, err := generateRMQR(worldURL, isDark)
 		if err == nil {
 			qrBounds := qrImg.Bounds()
-			scaleFactor := 3
+			scaleFactor := appConfig.Image.QRScaleFactor
 			scaledWidth = qrBounds.Dx() * scaleFactor
 			scaledHeight = qrBounds.Dy() * scaleFactor
-			qrX = origWidth - scaledWidth - rightPadding
+			qrX = origWidth - scaledWidth - appConfig.Image.QRRightPadding
 			if qrX < marginLeft {
 				qrX = marginLeft
 			}
@@ -1527,7 +1797,7 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 		return ""
 	}
 
-	formattedDate := formatDateAsYMD(date)
+	formattedDate := formatDateForDisplay(date)
 	currentX := marginLeft
 
 	// アイコン1: カレンダー
@@ -1554,8 +1824,8 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 	if worldName != "" && currentX < availableRight {
 		// 撮影者がコンフィグのプレースホルダー名の場合は撮影者セクションを省略
 		skipAuthor := false
-		if strings.TrimSpace(placeholderAuthorName) != "" {
-			skipAuthor = strings.TrimSpace(authorName) == strings.TrimSpace(placeholderAuthorName)
+		if strings.TrimSpace(appConfig.PlaceholderAuthorName) != "" {
+			skipAuthor = strings.TrimSpace(authorName) == strings.TrimSpace(appConfig.PlaceholderAuthorName)
 		}
 		if !skipAuthor {
 			// アイコン2: カメラ（作成者）
