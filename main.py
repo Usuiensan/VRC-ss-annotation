@@ -1,3 +1,8 @@
+# Suppress NumPy MINGW build warning (experimental build). This hides the warning but does NOT fix possible crashes.
+import warnings
+warnings.filterwarnings("ignore", message=r"Numpy built with MINGW-W64 on Windows 64 bits is experimental.*")
+
+import os
 import pyautogui
 import time
 import threading
@@ -22,6 +27,14 @@ class ClickerApp:
         self.status_var = tk.StringVar(value="待機中")  # ステータス表示用
         self.region_var = tk.StringVar(value="1600,900,320,80")  # 字幕領域の初期値を設定
         self.template_path = "template.png"  # テンプレート画像のパスを固定値として設定
+        # ログファイルのパスを初期化（存在しなければヘッダを作成）
+        self.log_file = "fishing_log.csv"
+        if not os.path.exists(self.log_file):
+            try:
+                with open(self.log_file, "w", encoding="utf-8") as f:
+                    f.write("datetime,time,elapsed,avg\n")
+            except Exception as e:
+                print("ログファイル作成エラー:", e)
 
         # 開始・停止ボタン
         button_frame = ttk.Frame(root)
@@ -103,25 +116,27 @@ class ClickerApp:
                     if self.last_click_time is not None:
                         elapsed_time = current_time - self.last_click_time
                         self.total_time += elapsed_time
-                        avg_time = self.total_time / self.count
+                        # この検知を含めた回数で平均を計算するため、先にカウントを増やす
+                        self.count += 1
+                        avg_time = self.total_time / self.count if self.count > 0 else 0
                         # 秒数ラベル更新
                         self.time_label.config(text=f"{elapsed_time:.2f}")
                         self.avg_time_label.config(text=f"{avg_time:.2f}")
                         # ログに記録
-                        with open(self.log_file, "a") as f:
+                        with open(self.log_file, "a", encoding="utf-8") as f:
                             f.write(f"{datetime.datetime.now()}, {datetime.datetime.now().strftime('%H:%M:%S')}, {elapsed_time:.2f}, {avg_time:.2f}\n")
                         # DOS窓に出力
-                        print(f"[釣り上げログ] 回数: {self.count + 1}, 時刻: {datetime.datetime.now().strftime('%H:%M:%S')}, 秒数: {elapsed_time:.2f}, 平均秒数: {avg_time:.2f}")
+                        print(f"[釣り上げログ] 回数: {self.count}, 時刻: {datetime.datetime.now().strftime('%H:%M:%S')}, 秒数: {elapsed_time:.2f}, 平均秒数: {avg_time:.2f}")
                     else:
                         # 初回ログ記録
+                        self.count = 1
                         self.total_time = 0
                         avg_time = 0
-                        with open(self.log_file, "a") as f:
+                        with open(self.log_file, "a", encoding="utf-8") as f:
                             f.write(f"{datetime.datetime.now()}, {datetime.datetime.now().strftime('%H:%M:%S')}, 0.00, 0.00\n")
-                        print(f"[釣り上げログ] 回数: 1")
+                        print(f"[釣り上げログ] 回数: {self.count}")
                     self.last_click_time = current_time
                     pyautogui.click(button='right')  # 釣り糸を垂らす
-                    self.count += 1
                     self.counter_label.config(text=str(self.count))
                     # 釣り上げた後3秒待ってから
                     for _ in range(60):  # 0.05秒 × 60 = 3秒
