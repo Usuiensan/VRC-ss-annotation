@@ -13,17 +13,19 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
+	"image/jpeg"
 	"image/png"
 	"io"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
-
-	_ "image/jpeg"
 
 	"github.com/chai2010/webp"
 	"github.com/golang/freetype"
@@ -37,41 +39,47 @@ import (
 )
 
 var logMutex sync.Mutex
+var stateMutex sync.Mutex
+var configMutex sync.Mutex
 
 // グローバルコンフィグ構造体
 var appConfig *Config
 
 // Config はアプリケーション全体の設定を保持する構造体
 type Config struct {
-	PlaceholderAuthorName string         `json:"placeholderAuthorName"`
-	OutputDir             string         `json:"outputDir"`
-	DateFormat            string         `json:"dateFormat"`
-	Fonts                 FontConfig     `json:"fonts"`
-	IconPath              string         `json:"iconPath"`
-	Layout                LayoutConfig   `json:"layout"`
-	Colors                ColorConfig    `json:"colors"`
-	Image                 ImageConfig    `json:"image"`
+	PlaceholderAuthorName string             `json:"placeholderAuthorName"`
+	OutputDir             string             `json:"outputDir"`
+	DateFormat            string             `json:"dateFormat"`
+	Fonts                 FontConfig         `json:"fonts"`
+	IconPath              string             `json:"iconPath"`
+	Layout                LayoutConfig       `json:"layout"`
+	Colors                ColorConfig        `json:"colors"`
+	Image                 ImageConfig        `json:"image"`
+	Watcher               WatcherConfig      `json:"watcher"`
+	Eagle                 EagleConfig        `json:"eagle"`
+	State                 StateConfig        `json:"state"`
+	Notifications         NotificationConfig `json:"notifications"`
 }
 
 type FontConfig struct {
-	MonoFont       string   `json:"monoFont"`
-	MainFont       string   `json:"mainFont"`
-	FallbackFonts  []string `json:"fallbackFonts"`
+	MonoFont      string   `json:"monoFont"`
+	MainFont      string   `json:"mainFont"`
+	FallbackFonts []string `json:"fallbackFonts"`
 }
 
 type LayoutConfig struct {
-	MarginTop     int     `json:"marginTop"`
-	MarginLeft    int     `json:"marginLeft"`
-	MarginRight   int     `json:"marginRight"`
-	IconSize      int     `json:"iconSize"`
-	IconSpacing   int     `json:"iconSpacing"`
-	GapSize       int     `json:"gapSize"`
-	MainFontSize  float64 `json:"mainFontSize"`
+	MarginTop    int     `json:"marginTop"`
+	MarginLeft   int     `json:"marginLeft"`
+	MarginRight  int     `json:"marginRight"`
+	IconSize     int     `json:"iconSize"`
+	IconSpacing  int     `json:"iconSpacing"`
+	GapSize      int     `json:"gapSize"`
+	MainFontSize float64 `json:"mainFontSize"`
 }
 
 type ColorConfig struct {
-	TextColorLight      string `json:"textColorLight"`
-	TextColorDark       string `json:"textColorDark"`
+	TextColorLight       string `json:"textColorLight"`
+	TextColorDark        string `json:"textColorDark"`
 	BackgroundColorLight string `json:"backgroundColorLight"`
 	BackgroundColorDark  string `json:"backgroundColorDark"`
 }
@@ -86,12 +94,38 @@ type ImageConfig struct {
 	SupportedInputExtensions []string `json:"supportedInputExtensions"`
 }
 
+type WatcherConfig struct {
+	VRChatPhotoRoot            string `json:"vrchatPhotoRoot"`
+	AmazonPhotosOutputDir      string `json:"amazonPhotosOutputDir"`
+	FileStabilityWaitSeconds   int    `json:"fileStabilityWaitSeconds"`
+	StableCheckIntervalSeconds int    `json:"stableCheckIntervalSeconds"`
+	StableCheckCount           int    `json:"stableCheckCount"`
+	ScanIntervalSeconds        int    `json:"scanIntervalSeconds"`
+}
+
+type EagleConfig struct {
+	Enabled  *bool    `json:"enabled,omitempty"`
+	BaseURL  string   `json:"baseUrl"`
+	FolderID string   `json:"folderId"`
+	Folders  []string `json:"folders"`
+}
+
+type StateConfig struct {
+	Path string `json:"path"`
+}
+
+type NotificationConfig struct {
+	ToastEnabled *bool `json:"toastEnabled,omitempty"`
+}
+
 // デフォルト設定を返す
 func getDefaultConfig() *Config {
+	defaultEagleEnabled := true
+	defaultToastEnabled := true
 	return &Config{
 		PlaceholderAuthorName: "",
-		OutputDir: "",
-		DateFormat: "2006-01-02 Mon 15:04:05",
+		OutputDir:             "",
+		DateFormat:            "2006-01-02 Mon 15:04:05",
 		Fonts: FontConfig{
 			MonoFont: "C:\\Windows\\Fonts\\BIZ UDゴシック\\BIZ-UDGothicR.ttc",
 			MainFont: "C:\\Windows\\Fonts\\BIZ UDゴシック\\BIZ-UDGothicR.ttc",
@@ -125,6 +159,24 @@ func getDefaultConfig() *Config {
 			OutputFormat:             "auto",
 			SupportedInputExtensions: []string{".png", ".webp", ".jpg", ".jpeg"},
 		},
+		Watcher: WatcherConfig{
+			VRChatPhotoRoot:            "",
+			AmazonPhotosOutputDir:      "",
+			FileStabilityWaitSeconds:   5,
+			StableCheckIntervalSeconds: 1,
+			StableCheckCount:           3,
+			ScanIntervalSeconds:        3,
+		},
+		Eagle: EagleConfig{
+			Enabled: &defaultEagleEnabled,
+			BaseURL: "http://localhost:41595",
+		},
+		State: StateConfig{
+			Path: "watch-state.jsonl",
+		},
+		Notifications: NotificationConfig{
+			ToastEnabled: &defaultToastEnabled,
+		},
 	}
 }
 
@@ -135,7 +187,7 @@ func loadConfig() {
 
 	// 優先順序: annotate.config.json → config.json → 環境変数で指定されたファイル
 	candidates := []string{"annotate.config.json", "config.json"}
-	
+
 	// 環境変数でコンフィグファイルパスが指定されている場合、先頭に追加
 	if envConfigPath := os.Getenv("VRCS_ANNOTATE_CONFIG"); envConfigPath != "" {
 		candidates = append([]string{envConfigPath}, candidates...)
@@ -237,6 +289,42 @@ func mergeConfig(def, override *Config) *Config {
 	if len(override.Image.SupportedInputExtensions) > 0 {
 		def.Image.SupportedInputExtensions = override.Image.SupportedInputExtensions
 	}
+	if override.Watcher.VRChatPhotoRoot != "" {
+		def.Watcher.VRChatPhotoRoot = override.Watcher.VRChatPhotoRoot
+	}
+	if override.Watcher.AmazonPhotosOutputDir != "" {
+		def.Watcher.AmazonPhotosOutputDir = override.Watcher.AmazonPhotosOutputDir
+	}
+	if override.Watcher.FileStabilityWaitSeconds > 0 {
+		def.Watcher.FileStabilityWaitSeconds = override.Watcher.FileStabilityWaitSeconds
+	}
+	if override.Watcher.StableCheckIntervalSeconds > 0 {
+		def.Watcher.StableCheckIntervalSeconds = override.Watcher.StableCheckIntervalSeconds
+	}
+	if override.Watcher.StableCheckCount > 0 {
+		def.Watcher.StableCheckCount = override.Watcher.StableCheckCount
+	}
+	if override.Watcher.ScanIntervalSeconds > 0 {
+		def.Watcher.ScanIntervalSeconds = override.Watcher.ScanIntervalSeconds
+	}
+	if override.Eagle.Enabled != nil {
+		def.Eagle.Enabled = override.Eagle.Enabled
+	}
+	if override.Eagle.BaseURL != "" {
+		def.Eagle.BaseURL = override.Eagle.BaseURL
+	}
+	if override.Eagle.FolderID != "" {
+		def.Eagle.FolderID = override.Eagle.FolderID
+	}
+	if len(override.Eagle.Folders) > 0 {
+		def.Eagle.Folders = override.Eagle.Folders
+	}
+	if override.State.Path != "" {
+		def.State.Path = override.State.Path
+	}
+	if override.Notifications.ToastEnabled != nil {
+		def.Notifications.ToastEnabled = override.Notifications.ToastEnabled
+	}
 	return def
 }
 
@@ -315,7 +403,7 @@ func adjustOutputPath(outputPath string, outputFormat string) string {
 
 	format := strings.ToLower(outputFormat)
 	var newExt string
-	
+
 	if format == "webp" {
 		newExt = ".webp"
 	} else if format == "png" {
@@ -347,9 +435,680 @@ func getOutputDir(imagePath string) string {
 	return filepath.Join(filepath.Dir(imagePath), "annotated")
 }
 
+type SourceType string
+
+const (
+	SourceTypePhoto   SourceType = "photo"
+	SourceTypePrint   SourceType = "print"
+	SourceTypeSticker SourceType = "sticker"
+	SourceTypeStamp   SourceType = "stamp"
+	SourceTypeEmoji   SourceType = "emoji"
+	SourceTypeUnknown SourceType = "unknown"
+)
+
+type PhotoRecord struct {
+	SourcePath   string     `json:"source_path"`
+	SourceType   SourceType `json:"source_type"`
+	WorldID      string     `json:"world_id,omitempty"`
+	WorldName    string     `json:"world_name,omitempty"`
+	InstanceID   string     `json:"instance_id,omitempty"`
+	InstanceType string     `json:"instance_type,omitempty"`
+	ShootDate    string     `json:"shoot_date,omitempty"`
+	AuthorName   string     `json:"author_name,omitempty"`
+	PresentUsers []string   `json:"present_users,omitempty"`
+	OutputPath   string     `json:"output_path,omitempty"`
+}
+
+type ProcessStateEntry struct {
+	Timestamp    string     `json:"timestamp"`
+	SourcePath   string     `json:"source_path"`
+	SourceType   SourceType `json:"source_type"`
+	OutputPath   string     `json:"output_path,omitempty"`
+	EagleStatus  string     `json:"eagle_status"`
+	AmazonStatus string     `json:"amazon_status"`
+	WorldID      string     `json:"world_id,omitempty"`
+	WorldName    string     `json:"world_name,omitempty"`
+	InstanceID   string     `json:"instance_id,omitempty"`
+	Error        string     `json:"error,omitempty"`
+	Size         int64      `json:"size"`
+	ModTimeUnix  int64      `json:"mod_time_unix"`
+}
+
+type eagleAddRequest struct {
+	Path       string   `json:"path"`
+	Name       string   `json:"name"`
+	Website    string   `json:"website,omitempty"`
+	Tags       []string `json:"tags,omitempty"`
+	Folders    []string `json:"folders,omitempty"`
+	Annotation string   `json:"annotation,omitempty"`
+}
+
+func runSubcommand(args []string) (bool, error) {
+	if len(args) == 0 {
+		return false, nil
+	}
+	switch args[0] {
+	case "watch":
+		fs := flag.NewFlagSet("watch", flag.ExitOnError)
+		root := fs.String("root", appConfig.Watcher.VRChatPhotoRoot, "VRChat写真フォルダ")
+		amazonDir := fs.String("amazon-output-dir", appConfig.Watcher.AmazonPhotosOutputDir, "Amazon Photos用出力ディレクトリ")
+		_ = fs.Parse(args[1:])
+		if *root != "" {
+			appConfig.Watcher.VRChatPhotoRoot = *root
+		}
+		if *amazonDir != "" {
+			appConfig.Watcher.AmazonPhotosOutputDir = *amazonDir
+		}
+		return true, watchPhotoRoot()
+	case "process-file":
+		fs := flag.NewFlagSet("process-file", flag.ExitOnError)
+		amazonDir := fs.String("amazon-output-dir", appConfig.Watcher.AmazonPhotosOutputDir, "Amazon Photos用出力ディレクトリ")
+		_ = fs.Parse(args[1:])
+		if *amazonDir != "" {
+			appConfig.Watcher.AmazonPhotosOutputDir = *amazonDir
+		}
+		if fs.NArg() != 1 {
+			return true, errors.New("process-file には画像パスを1つだけ指定してください")
+		}
+		entry := processWatchedFile(fs.Arg(0), true)
+		if entry.Error != "" {
+			return true, errors.New(entry.Error)
+		}
+		return true, nil
+	case "test-eagle":
+		return true, testEagleConnection()
+	case "print-config":
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return true, enc.Encode(appConfig)
+	case "retry-failed":
+		return true, retryFailed()
+	default:
+		return false, nil
+	}
+}
+
+func eagleEnabled() bool {
+	return appConfig.Eagle.Enabled == nil || *appConfig.Eagle.Enabled
+}
+
+func classifySourceType(path string) SourceType {
+	lowerPath := strings.ToLower(filepath.ToSlash(path))
+	lowerBase := strings.ToLower(filepath.Base(path))
+	if strings.Contains(lowerPath, "/stickers/") {
+		return SourceTypeSticker
+	}
+	if strings.Contains(lowerPath, "/print/") {
+		return SourceTypePrint
+	}
+	if strings.Contains(lowerPath, "/stamp/") {
+		return SourceTypeStamp
+	}
+	if strings.Contains(lowerPath, "emoji") || strings.Contains(lowerPath, "emojis") ||
+		strings.Contains(lowerPath, "emote") || strings.Contains(lowerPath, "emoticon") {
+		return SourceTypeEmoji
+	}
+	re := regexp.MustCompile(`(?i)^VRChat_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.\d+_.*`)
+	if re.MatchString(lowerBase) {
+		return SourceTypePhoto
+	}
+	return SourceTypeUnknown
+}
+
+func buildPhotoRecord(path string, sourceType SourceType) PhotoRecord {
+	meta, err := readVRChatExifPNG(path, true, true)
+	record := PhotoRecord{SourcePath: path, SourceType: sourceType}
+	if err == nil {
+		record.WorldID, _ = meta["worldID"].(string)
+		record.WorldName, _ = meta["worldName"].(string)
+		record.ShootDate, _ = meta["shootDate"].(string)
+		record.AuthorName, _ = meta["authorName"].(string)
+	}
+	if record.ShootDate == "" {
+		record.ShootDate = extractDateFromFilename(path)
+	}
+	return record
+}
+
+func waitForStableFile(path string) error {
+	if appConfig.Watcher.FileStabilityWaitSeconds > 0 {
+		time.Sleep(time.Duration(appConfig.Watcher.FileStabilityWaitSeconds) * time.Second)
+	}
+	interval := appConfig.Watcher.StableCheckIntervalSeconds
+	if interval <= 0 {
+		interval = 1
+	}
+	needed := appConfig.Watcher.StableCheckCount
+	if needed <= 0 {
+		needed = 3
+	}
+	var lastSize int64 = -1
+	var lastMod time.Time
+	stableCount := 0
+	for stableCount < needed {
+		info, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			time.Sleep(time.Duration(interval) * time.Second)
+			continue
+		}
+		_ = f.Close()
+		if info.Size() == lastSize && info.ModTime().Equal(lastMod) {
+			stableCount++
+		} else {
+			stableCount = 1
+			lastSize = info.Size()
+			lastMod = info.ModTime()
+		}
+		if stableCount < needed {
+			time.Sleep(time.Duration(interval) * time.Second)
+		}
+	}
+	return nil
+}
+
+func watchPhotoRoot() error {
+	root := appConfig.Watcher.VRChatPhotoRoot
+	if root == "" {
+		return errors.New("watcher.vrchatPhotoRoot が必要です。watch -root <path> を渡すか annotate.config.json に設定してください")
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	initial, err := scanImageFiles(absRoot)
+	if err != nil {
+		return err
+	}
+	seen := make(map[string]struct{}, len(initial))
+	for _, path := range initial {
+		seen[path] = struct{}{}
+	}
+	fmt.Printf("%s を監視しています（既存ファイル %d 件は対象外）\n", absRoot, len(seen))
+	interval := appConfig.Watcher.ScanIntervalSeconds
+	if interval <= 0 {
+		interval = 3
+	}
+	for {
+		paths, err := scanImageFiles(absRoot)
+		if err != nil {
+			appendLog(fmt.Sprintf("watch scan error: %v", err))
+			time.Sleep(time.Duration(interval) * time.Second)
+			continue
+		}
+		for _, path := range paths {
+			if _, ok := seen[path]; ok {
+				continue
+			}
+			seen[path] = struct{}{}
+			go func(p string) {
+				if err := waitForStableFile(p); err != nil {
+					entry := stateEntryForPath(p)
+					entry.EagleStatus = "skipped"
+					entry.AmazonStatus = "failed"
+					entry.Error = fmt.Sprintf("ファイル安定待ちに失敗しました: %v", err)
+					appendState(entry)
+					appendLog(entry.Error)
+					notifyFailure(entry)
+					return
+				}
+				entry := processWatchedFile(p, false)
+				if entry.Error != "" {
+					fmt.Fprintf(os.Stderr, "watch processing error (%s): %s\n", p, entry.Error)
+				}
+			}(path)
+		}
+		time.Sleep(time.Duration(interval) * time.Second)
+	}
+}
+
+func scanImageFiles(root string) ([]string, error) {
+	var paths []string
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if strings.EqualFold(d.Name(), "annotated") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if isSupportedInputFile(path, appConfig.Image.SupportedInputExtensions) {
+			abs, err := filepath.Abs(path)
+			if err == nil {
+				paths = append(paths, abs)
+			}
+		}
+		return nil
+	})
+	sort.Strings(paths)
+	return paths, err
+}
+
+func processWatchedFile(path string, force bool) ProcessStateEntry {
+	absPath, _ := filepath.Abs(path)
+	if !force && alreadyProcessed(absPath) {
+		entry := stateEntryForPath(absPath)
+		entry.EagleStatus = "skipped"
+		entry.AmazonStatus = "skipped"
+		return entry
+	}
+	sourceType := classifySourceType(absPath)
+	record := buildPhotoRecord(absPath, sourceType)
+	entry := stateEntryForPath(absPath)
+	entry.SourceType = sourceType
+	entry.WorldID = record.WorldID
+	entry.WorldName = record.WorldName
+	entry.InstanceID = record.InstanceID
+
+	if !eagleEnabled() {
+		entry.EagleStatus = "skipped"
+	} else if err := exportToEagle(record); err != nil {
+		entry.EagleStatus = "failed"
+		entry.Error = joinErrors(entry.Error, fmt.Sprintf("eagle: %v", err))
+	} else {
+		entry.EagleStatus = "success"
+	}
+	outputPath, err := exportToAmazon(record)
+	entry.OutputPath = outputPath
+	if err != nil {
+		entry.AmazonStatus = "failed"
+		entry.Error = joinErrors(entry.Error, fmt.Sprintf("amazon: %v", err))
+	} else {
+		entry.AmazonStatus = "success"
+	}
+	appendState(entry)
+	if entry.Error != "" {
+		appendLog(fmt.Sprintf("処理失敗: %s: %s", absPath, entry.Error))
+		notifyFailure(entry)
+	} else {
+		appendLog(fmt.Sprintf("処理完了: %s", absPath))
+	}
+	return entry
+}
+
+func exportToEagle(record PhotoRecord) error {
+	req := buildEagleRequest(record)
+	body, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	url := strings.TrimRight(appConfig.Eagle.BaseURL, "/") + "/api/v2/item/add"
+	client := http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return fmt.Errorf("HTTPステータス %s: %s", resp.Status, strings.TrimSpace(string(data)))
+	}
+	var result struct {
+		Status  string `json:"status"`
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("Eagle API応答の解析に失敗しました: %v", err)
+	}
+	if !strings.EqualFold(result.Status, "success") {
+		if result.Message == "" {
+			result.Message = "詳細なし"
+		}
+		return fmt.Errorf("Eagle APIエラー: %s", result.Message)
+	}
+	return nil
+}
+
+func buildEagleRequest(record PhotoRecord) eagleAddRequest {
+	tags := []string{"VRChat", "type:" + string(record.SourceType)}
+	if record.WorldName != "" && (record.SourceType == SourceTypePhoto || record.SourceType == SourceTypePrint) {
+		tags = append(tags, "wrld:"+record.WorldName)
+	}
+	if ym := shootMonth(record.ShootDate); ym != "" && (record.SourceType == SourceTypePhoto || record.SourceType == SourceTypePrint) {
+		tags = append(tags, ym)
+	}
+	if record.SourceType == SourceTypePhoto {
+		for _, user := range record.PresentUsers {
+			if strings.TrimSpace(user) != "" {
+				tags = append(tags, "user:"+strings.TrimSpace(user))
+			}
+		}
+	}
+	folders := append([]string{}, appConfig.Eagle.Folders...)
+	if appConfig.Eagle.FolderID != "" {
+		folders = append(folders, appConfig.Eagle.FolderID)
+	}
+	req := eagleAddRequest{
+		Path:    record.SourcePath,
+		Name:    strings.TrimSuffix(filepath.Base(record.SourcePath), filepath.Ext(record.SourcePath)),
+		Tags:    tags,
+		Folders: folders,
+	}
+	if (record.SourceType == SourceTypePhoto || record.SourceType == SourceTypePrint) && record.WorldID != "" {
+		req.Website = "https://vrchat.com/home/world/" + record.WorldID
+		var lines []string
+		if record.WorldName != "" {
+			lines = append(lines, "World: "+record.WorldName)
+		}
+		if record.InstanceID != "" {
+			instance := record.InstanceID
+			if record.InstanceType != "" {
+				instance += "(" + record.InstanceType + ")"
+			}
+			lines = append(lines, "Instance: "+instance)
+		}
+		req.Annotation = strings.Join(lines, "\n")
+	}
+	return req
+}
+
+func exportToAmazon(record PhotoRecord) (string, error) {
+	outputDir := amazonOutputDir()
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		return "", err
+	}
+	outputPath := filepath.Join(outputDir, filepath.Base(record.SourcePath))
+	if samePath(record.SourcePath, outputPath) {
+		return "", errors.New("元画像の上書きを防止しました")
+	}
+	switch record.SourceType {
+	case SourceTypePhoto:
+		configMutex.Lock()
+		oldOutput := appConfig.OutputDir
+		appConfig.OutputDir = outputDir
+		defer func() {
+			appConfig.OutputDir = oldOutput
+			configMutex.Unlock()
+		}()
+		worldURL := ""
+		if record.WorldID != "" {
+			worldURL = "https://vrchat.com/home/world/" + record.WorldID
+		}
+		if err := addMetadataToImage(record.SourcePath, record.ShootDate, record.WorldName, record.AuthorName, "", worldURL); err != nil {
+			return outputPath, err
+		}
+		return adjustOutputPath(outputPath, determineOutputFormat(record.SourcePath, appConfig.Image.OutputFormat)), nil
+	case SourceTypePrint:
+		if record.WorldID == "" {
+			return outputPath, copyFile(record.SourcePath, outputPath)
+		}
+		return outputPath, addRMQROnlyCopy(record.SourcePath, outputPath, "https://vrchat.com/home/world/"+record.WorldID)
+	default:
+		return outputPath, copyFile(record.SourcePath, outputPath)
+	}
+}
+
+func addRMQROnlyCopy(sourcePath, outputPath, worldURL string) error {
+	file, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	img, format, err := image.Decode(file)
+	if err != nil {
+		return err
+	}
+	bounds := img.Bounds()
+	outImg := image.NewRGBA(bounds)
+	draw.Draw(outImg, bounds, img, bounds.Min, draw.Src)
+	if worldURL != "" {
+		qrImg, err := generateRMQR(worldURL, false)
+		if err == nil {
+			qrBounds := qrImg.Bounds()
+			scaleFactor := appConfig.Image.QRScaleFactor
+			scaledWidth := qrBounds.Dx() * scaleFactor
+			scaledHeight := qrBounds.Dy() * scaleFactor
+			qrX := bounds.Dx() - scaledWidth - appConfig.Image.QRRightPadding
+			if qrX < 0 {
+				qrX = 0
+			}
+			qrY := 4
+			scaledQR := image.NewRGBA(image.Rect(0, 0, scaledWidth, scaledHeight))
+			xdraw.NearestNeighbor.Scale(scaledQR, scaledQR.Bounds(), qrImg, qrBounds, draw.Src, nil)
+			bgRect := image.Rect(qrX, qrY, qrX+scaledWidth, qrY+scaledHeight)
+			draw.Draw(outImg, bgRect, &image.Uniform{color.White}, image.Point{}, draw.Src)
+			draw.Draw(outImg, bgRect, scaledQR, image.Point{}, draw.Over)
+		}
+	}
+	outFile, err := os.Create(outputPath)
+	if err != nil {
+		return err
+	}
+	defer outFile.Close()
+	switch strings.ToLower(format) {
+	case "jpeg", "jpg":
+		return jpeg.Encode(outFile, outImg, &jpeg.Options{Quality: 95})
+	case "webp":
+		quality := float32(appConfig.Image.WebPCompressionQuality)
+		if quality <= 0 || quality > 100 {
+			quality = 100
+		}
+		return webp.Encode(outFile, outImg, &webp.Options{Lossless: appConfig.Image.WebPLossless, Quality: quality})
+	default:
+		return png.Encode(outFile, outImg)
+	}
+}
+
+func amazonOutputDir() string {
+	if appConfig.Watcher.AmazonPhotosOutputDir != "" {
+		return appConfig.Watcher.AmazonPhotosOutputDir
+	}
+	if appConfig.Watcher.VRChatPhotoRoot != "" {
+		return filepath.Join(appConfig.Watcher.VRChatPhotoRoot, "Annotated")
+	}
+	return "Annotated"
+}
+
+func copyFile(sourcePath, outputPath string) error {
+	if sourcePath == outputPath {
+		return errors.New("元画像の上書きを防止しました")
+	}
+	in, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(outputPath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
+}
+
+func testEagleConnection() error {
+	url := strings.TrimRight(appConfig.Eagle.BaseURL, "/") + "/api/v2/app/info"
+	client := http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("HTTPステータス %s", resp.Status)
+	}
+	fmt.Printf("Eagle API 接続成功: %s\n", resp.Status)
+	return nil
+}
+
+func retryFailed() error {
+	entries, err := readStateEntries()
+	if err != nil {
+		return err
+	}
+	count := 0
+	for _, entry := range entries {
+		if entry.EagleStatus == "failed" || entry.AmazonStatus == "failed" {
+			if _, err := os.Stat(entry.SourcePath); err != nil {
+				continue
+			}
+			processWatchedFile(entry.SourcePath, true)
+			count++
+		}
+	}
+	fmt.Printf("失敗エントリを %d 件再試行しました\n", count)
+	return nil
+}
+
+func appendState(entry ProcessStateEntry) {
+	stateMutex.Lock()
+	defer stateMutex.Unlock()
+	path := appConfig.State.Path
+	if path == "" {
+		path = "watch-state.jsonl"
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		appendLog(fmt.Sprintf("state write failed: %v", err))
+		return
+	}
+	defer f.Close()
+	enc := json.NewEncoder(f)
+	if err := enc.Encode(entry); err != nil {
+		appendLog(fmt.Sprintf("state encode failed: %v", err))
+	}
+}
+
+func readStateEntries() ([]ProcessStateEntry, error) {
+	stateMutex.Lock()
+	defer stateMutex.Unlock()
+	path := appConfig.State.Path
+	if path == "" {
+		path = "watch-state.jsonl"
+	}
+	f, err := os.Open(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var entries []ProcessStateEntry
+	dec := json.NewDecoder(f)
+	for {
+		var entry ProcessStateEntry
+		if err := dec.Decode(&entry); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return entries, err
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
+}
+
+func alreadyProcessed(path string) bool {
+	entries, err := readStateEntries()
+	if err != nil {
+		return false
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		if samePath(entry.SourcePath, path) && entry.Size == info.Size() && entry.ModTimeUnix == info.ModTime().Unix() &&
+			isTerminalSuccess(entry.EagleStatus) && isTerminalSuccess(entry.AmazonStatus) {
+			return true
+		}
+	}
+	return false
+}
+
+func isTerminalSuccess(status string) bool {
+	return status == "success" || status == "skipped"
+}
+
+func stateEntryForPath(path string) ProcessStateEntry {
+	entry := ProcessStateEntry{
+		Timestamp:    time.Now().Format(time.RFC3339),
+		SourcePath:   path,
+		EagleStatus:  "pending",
+		AmazonStatus: "pending",
+	}
+	if info, err := os.Stat(path); err == nil {
+		entry.Size = info.Size()
+		entry.ModTimeUnix = info.ModTime().Unix()
+	}
+	return entry
+}
+
+func samePath(a, b string) bool {
+	aa, errA := filepath.Abs(a)
+	bb, errB := filepath.Abs(b)
+	if errA == nil {
+		a = aa
+	}
+	if errB == nil {
+		b = bb
+	}
+	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
+}
+
+func shootMonth(shootDate string) string {
+	if len(shootDate) >= 7 {
+		return shootDate[:7]
+	}
+	return ""
+}
+
+func joinErrors(a, b string) string {
+	if a == "" {
+		return b
+	}
+	if b == "" {
+		return a
+	}
+	return a + "; " + b
+}
+
+func toastEnabled() bool {
+	return appConfig.Notifications.ToastEnabled == nil || *appConfig.Notifications.ToastEnabled
+}
+
+func notifyFailure(entry ProcessStateEntry) {
+	if !toastEnabled() || runtime.GOOS != "windows" {
+		return
+	}
+	title := "VRC ss annotation"
+	message := "処理に失敗しました: " + filepath.Base(entry.SourcePath)
+	if entry.Error != "" {
+		message += " - " + entry.Error
+	}
+	script := fmt.Sprintf(
+		`Add-Type -AssemblyName System.Windows.Forms; $n=New-Object System.Windows.Forms.NotifyIcon; $n.Icon=[System.Drawing.SystemIcons]::Warning; $n.Visible=$true; $n.ShowBalloonTip(5000,'%s','%s',[System.Windows.Forms.ToolTipIcon]::Warning); Start-Sleep -Seconds 6; $n.Dispose()`,
+		escapePowerShellSingleQuoted(title),
+		escapePowerShellSingleQuoted(message),
+	)
+	cmd := exec.Command("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script)
+	if err := cmd.Start(); err != nil {
+		appendLog(fmt.Sprintf("notification failed: %v", err))
+	}
+}
+
+func escapePowerShellSingleQuoted(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
+}
+
 func main() {
 	// コンフィグ読み込み
 	loadConfig()
+	if handled, err := runSubcommand(os.Args[1:]); handled {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	// CLI flags
 	jsonOut := flag.Bool("json", false, "出力をJSONにします")       // --json
 	rawOut := flag.Bool("raw", false, "デバッグ用に生のメタデータを表示します") // --raw
@@ -499,7 +1258,7 @@ func main() {
 		}
 		close(jobs)
 		wg.Wait()
-		
+
 		// アノテーション完了後に待機
 		// fmt.Println("\n数秒後に自動で終了します...")
 		// time.Sleep(3 * time.Second)
@@ -704,21 +1463,21 @@ func extractTextualMetadataFromPNG(data []byte) (string, error) {
 		compFlag := rest[0]
 		// compMethod := rest[1]  // Usually 0 (deflate)
 		rest = rest[2:]
-		
+
 		// Skip language tag
 		langEnd := bytes.IndexByte(rest, 0)
 		if langEnd == -1 {
 			return "", false
 		}
 		rest = rest[langEnd+1:]
-		
+
 		// Skip translated keyword
 		transEnd := bytes.IndexByte(rest, 0)
 		if transEnd == -1 {
 			return "", false
 		}
 		textBytes := rest[transEnd+1:]
-		
+
 		// Check compression flag
 		if compFlag == 1 {
 			// Compressed
@@ -748,7 +1507,7 @@ func extractTextualMetadataFromPNG(data []byte) (string, error) {
 		compFlag := rest[0]
 		// compMethod := rest[1]  // 通常は0（deflate）
 		compData := rest[2:]
-		
+
 		if compFlag == 1 {
 			// 圧縮されている場合
 			zr, err := zlib.NewReader(bytes.NewReader(compData))
@@ -948,12 +1707,12 @@ func formatXMLString(xmlStr string) string {
 	if xmlStr == "" {
 		return ""
 	}
-	
+
 	var buf bytes.Buffer
 	dec := xml.NewDecoder(strings.NewReader(xmlStr))
 	enc := xml.NewEncoder(&buf)
 	enc.Indent("", "  ")
-	
+
 	for {
 		tok, err := dec.Token()
 		if err == io.EOF {
@@ -970,7 +1729,7 @@ func formatXMLString(xmlStr string) string {
 	if err := enc.Flush(); err != nil {
 		return xmlStr
 	}
-	
+
 	result := buf.String()
 	if result == "" {
 		return xmlStr
@@ -1039,7 +1798,7 @@ func readVRChatExifPNG(filename string, jsonOut, noHuman bool) (map[string]inter
 			meta["authorName"] = authorName
 		}
 	}
-	
+
 	// Try XMP (WebP)
 	if t2, err := extractTextualMetadataFromWebP(data); err == nil {
 		meta["xmpRawWebP"] = t2
@@ -1050,13 +1809,13 @@ func readVRChatExifPNG(filename string, jsonOut, noHuman bool) (map[string]inter
 			meta["worldName"] = wname
 			meta["authorID"] = aid
 		}
-		
+
 		// Extract shoot date and author name
 		shootDate := extractDateFromXMP(t2)
 		if shootDate != "" {
 			meta["shootDate"] = shootDate
 		}
-		
+
 		authorName := extractAuthorFromXMP(t2)
 		if authorName != "" {
 			meta["authorName"] = authorName
@@ -1168,7 +1927,7 @@ func addMetadataToImage(imagePath string, date string, worldName string, authorN
 				return err
 			}
 			outputPath := filepath.Join(outputDir, filepath.Base(imagePath))
-			
+
 			// 元画像をコピー
 			origData, err := os.ReadFile(imagePath)
 			if err != nil {
@@ -1176,7 +1935,7 @@ func addMetadataToImage(imagePath string, date string, worldName string, authorN
 			}
 			return os.WriteFile(outputPath, origData, 0644)
 		}
-		
+
 		// ワールド情報あり → rMQRコードのみ白背景で右上に描画
 		outImg := image.NewRGBA(bounds)
 		draw.Draw(outImg, bounds, img, bounds.Min, draw.Src)
@@ -1206,20 +1965,20 @@ func addMetadataToImage(imagePath string, date string, worldName string, authorN
 			draw.Draw(outImg, bgRect, &image.Uniform{color.White}, image.Point{}, draw.Src)
 			draw.Draw(outImg, bgRect, scaledQR, image.Point{}, draw.Over)
 		}
-		
+
 		outputDir := getOutputDir(imagePath)
 		if err := os.MkdirAll(outputDir, 0755); err != nil {
 			return err
 		}
 		outputPath := filepath.Join(outputDir, filepath.Base(imagePath))
-		
+
 		// 出力フォーマットを決定
 		outputFormat := determineOutputFormat(imagePath, appConfig.Image.OutputFormat)
 		isWebP := outputFormat == "webp"
 
 		// 出力フォーマットに応じて拡張子を調整
 		outputPath = adjustOutputPath(outputPath, outputFormat)
-		
+
 		if isWebP {
 			var buf bytes.Buffer
 			quality := float32(appConfig.Image.WebPCompressionQuality)
@@ -1230,7 +1989,7 @@ func addMetadataToImage(imagePath string, date string, worldName string, authorN
 			if err != nil {
 				return err
 			}
-			
+
 			outFile, err := os.Create(outputPath)
 			if err != nil {
 				return err
@@ -1240,23 +1999,31 @@ func addMetadataToImage(imagePath string, date string, worldName string, authorN
 			if err != nil {
 				return err
 			}
-			
+
 			// WebP 保存後に XMP メタデータを追加
 			xmpAdded := false
 			webpXMP, webpErr := extractTextualMetadataFromWebP(origData)
 			pngXMP, pngErr := extractTextualMetadataFromPNG(origData)
-			
-fmt.Fprintf(os.Stderr, "  [Metadata] WebP XMP: %s (%d bytes)\n", func() string {
-			if webpErr != nil { return "ERROR" }
-			if webpXMP == "" { return "NOT_FOUND" }
-			return "OK"
-		}(), len(webpXMP))
-		fmt.Fprintf(os.Stderr, "  [Metadata] PNG XMP: %s (%d bytes)\n", func() string {
-			if pngErr != nil { return "ERROR" }
-			if pngXMP == "" { return "NOT_FOUND" }
-			return "OK"
+
+			fmt.Fprintf(os.Stderr, "  [Metadata] WebP XMP: %s (%d bytes)\n", func() string {
+				if webpErr != nil {
+					return "ERROR"
+				}
+				if webpXMP == "" {
+					return "NOT_FOUND"
+				}
+				return "OK"
+			}(), len(webpXMP))
+			fmt.Fprintf(os.Stderr, "  [Metadata] PNG XMP: %s (%d bytes)\n", func() string {
+				if pngErr != nil {
+					return "ERROR"
+				}
+				if pngXMP == "" {
+					return "NOT_FOUND"
+				}
+				return "OK"
 			}(), len(pngXMP))
-			
+
 			if webpErr == nil && webpXMP != "" {
 				fmt.Fprintf(os.Stderr, "  [Metadata] Writing WebP metadata...\n")
 				if err := addXMPToWebP(outputPath, webpXMP); err != nil {
@@ -1276,14 +2043,14 @@ fmt.Fprintf(os.Stderr, "  [Metadata] WebP XMP: %s (%d bytes)\n", func() string {
 				fmt.Fprintf(os.Stderr, "  [SUCCESS] PNG->WebP metadata written\n")
 				xmpAdded = true
 			}
-			
+
 			// メタデータが追加されたかチェック
 			if !xmpAdded {
 				fmt.Fprintf(os.Stderr, "  [WARNING] Print camera resolution WebP (%s) has no metadata\n", imagePath)
 			} else {
 				fmt.Fprintf(os.Stderr, "  [SUCCESS] WebP metadata processing completed\n")
 			}
-			
+
 			// メタデータ検証は暫定的に無効化（保存確認待ち）
 			return nil
 		} else {
@@ -1298,42 +2065,42 @@ fmt.Fprintf(os.Stderr, "  [Metadata] WebP XMP: %s (%d bytes)\n", func() string {
 			if err := png.Encode(outFile, outImg); err != nil {
 				return err
 			}
-			
+
 			// PNG 保存後に XMP メタデータを追加
-// 			xmpAdded := false
-// 			pngXMP, pngErr := extractTextualMetadataFromPNG(origData)
-// 			webpXMP, webpErr := extractTextualMetadataFromWebP(origData)
-// 			
-// 			fmt.Fprintf(os.Stderr, "DEBUG: PNG XMP抽出 - エラー: %v, サイズ: %d\n", pngErr, len(pngXMP))
-// 			fmt.Fprintf(os.Stderr, "DEBUG: WebP XMP抽出 - エラー: %v, サイズ: %d\n", webpErr, len(webpXMP))
-// 			
-// 			if pngErr == nil && pngXMP != "" {
-// 				fmt.Fprintf(os.Stderr, "DEBUG: PNG XMPを追加します\n")
-// 				if err := addXMPToPNG(outputPath, pngXMP); err != nil {
-// 					fmt.Fprintf(os.Stderr, "DEBUG: PNG XMP追加エラー: %v\n", err)
-// 					return err
-// 				}
-// 				xmpAdded = true
-// 			}
+			// 			xmpAdded := false
+			// 			pngXMP, pngErr := extractTextualMetadataFromPNG(origData)
+			// 			webpXMP, webpErr := extractTextualMetadataFromWebP(origData)
+			//
+			// 			fmt.Fprintf(os.Stderr, "DEBUG: PNG XMP抽出 - エラー: %v, サイズ: %d\n", pngErr, len(pngXMP))
+			// 			fmt.Fprintf(os.Stderr, "DEBUG: WebP XMP抽出 - エラー: %v, サイズ: %d\n", webpErr, len(webpXMP))
+			//
+			// 			if pngErr == nil && pngXMP != "" {
+			// 				fmt.Fprintf(os.Stderr, "DEBUG: PNG XMPを追加します\n")
+			// 				if err := addXMPToPNG(outputPath, pngXMP); err != nil {
+			// 					fmt.Fprintf(os.Stderr, "DEBUG: PNG XMP追加エラー: %v\n", err)
+			// 					return err
+			// 				}
+			// 				xmpAdded = true
+			// 			}
 			// WebP からの変換時は XMP を追加してみる
-// 			if !xmpAdded && webpErr == nil && webpXMP != "" {
-// 				fmt.Fprintf(os.Stderr, "DEBUG: WebP→PNG XMPを追加します\n")
-// 				if err := addXMPToPNG(outputPath, webpXMP); err != nil {
-// 					fmt.Fprintf(os.Stderr, "DEBUG: WebP→PNG XMP追加エラー: %v\n", err)
-// 					return err
-// 				}
-// 				xmpAdded = true
-// 			}
-// 			
+			// 			if !xmpAdded && webpErr == nil && webpXMP != "" {
+			// 				fmt.Fprintf(os.Stderr, "DEBUG: WebP→PNG XMPを追加します\n")
+			// 				if err := addXMPToPNG(outputPath, webpXMP); err != nil {
+			// 					fmt.Fprintf(os.Stderr, "DEBUG: WebP→PNG XMP追加エラー: %v\n", err)
+			// 					return err
+			// 				}
+			// 				xmpAdded = true
+			// 			}
+			//
 			// メタデータが追加されたかチェック
-// 			if !xmpAdded {
-// 				fmt.Fprintf(os.Stderr, "警告: プリントカメラ解像度PNG (%s) にメタデータがありません\n", imagePath)
-// 			} else {
-// 				fmt.Fprintf(os.Stderr, "DEBUG: PNG XMP追加完了\n")
-// 			}
-// 			
+			// 			if !xmpAdded {
+			// 				fmt.Fprintf(os.Stderr, "警告: プリントカメラ解像度PNG (%s) にメタデータがありません\n", imagePath)
+			// 			} else {
+			// 				fmt.Fprintf(os.Stderr, "DEBUG: PNG XMP追加完了\n")
+			// 			}
+			//
 			// メタデータ検証は暫定的に無効化（保存確認待ち）
-// 			return nil
+			// 			return nil
 			return nil
 		}
 	}
@@ -1354,14 +2121,14 @@ fmt.Fprintf(os.Stderr, "  [Metadata] WebP XMP: %s (%d bytes)\n", func() string {
 	newImg := image.NewRGBA(image.Rect(0, 0, newWidth, newHeight))
 	draw.Draw(newImg, newImg.Bounds(), &image.Uniform{bgColor}, image.Point{}, draw.Src)
 	draw.Draw(newImg, image.Rect(0, marginTop, width, marginTop+height), img, bounds.Min, draw.Over)
-	
+
 	if worldName == "" {
 		if date == "" {
 			date = extractDateFromFilename(imagePath)
 		}
 		worldURL = ""
 	}
-	
+
 	// テキストとメタデータを描画
 	isDark := isDarkImage(img)
 	textColor := color.White
@@ -1369,7 +2136,7 @@ fmt.Fprintf(os.Stderr, "  [Metadata] WebP XMP: %s (%d bytes)\n", func() string {
 		textColor = color.Black
 	}
 	addTextToImage(newImg, date, worldName, authorName, authorID, worldURL, marginTop, newWidth, newHeight, textColor, bgColor, isDark, worldURL != "")
-	
+
 	outputDir := getOutputDir(imagePath)
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return err
@@ -1393,7 +2160,7 @@ fmt.Fprintf(os.Stderr, "  [Metadata] WebP XMP: %s (%d bytes)\n", func() string {
 		if err != nil {
 			return err
 		}
-		
+
 		outFile, err := os.Create(outputPath)
 		if err != nil {
 			return err
@@ -1403,7 +2170,7 @@ fmt.Fprintf(os.Stderr, "  [Metadata] WebP XMP: %s (%d bytes)\n", func() string {
 		if err != nil {
 			return err
 		}
-		
+
 		// WebP 保存後に XMP メタデータを追加
 		if xmp, err := extractTextualMetadataFromWebP(origData); err == nil && xmp != "" {
 			if err := addXMPToWebP(outputPath, xmp); err != nil {
@@ -1416,7 +2183,7 @@ fmt.Fprintf(os.Stderr, "  [Metadata] WebP XMP: %s (%d bytes)\n", func() string {
 				return err
 			}
 		}
-		
+
 		// メタデータ検証は暫定的に無効化（保存確認待ち）
 		return nil
 	} else {
@@ -1431,7 +2198,7 @@ fmt.Fprintf(os.Stderr, "  [Metadata] WebP XMP: %s (%d bytes)\n", func() string {
 		if err := png.Encode(outFile, newImg); err != nil {
 			return err
 		}
-		
+
 		// PNG 保存後に XMP メタデータを追加
 		if xmp, err := extractTextualMetadataFromPNG(origData); err == nil && xmp != "" {
 			fmt.Fprintf(os.Stderr, "  [Metadata] PNG XMP extracted (%d bytes)...\n", len(xmp))
@@ -1454,7 +2221,7 @@ fmt.Fprintf(os.Stderr, "  [Metadata] WebP XMP: %s (%d bytes)\n", func() string {
 			}
 			fmt.Fprintf(os.Stderr, "  [SUCCESS] WebP->PNG metadata written\n")
 		}
-		
+
 		// メタデータ検証は暫定的に無効化（保存確認待ち）
 		return nil
 	}
@@ -1462,7 +2229,7 @@ fmt.Fprintf(os.Stderr, "  [Metadata] WebP XMP: %s (%d bytes)\n", func() string {
 
 func extractDateFromFilename(filePath string) string {
 	filename := filepath.Base(filePath)
-	
+
 	// パターン1: VRChat_2026-01-15_22-52-38.319_3840x2160
 	// パターン2: VRChat_2026-01-14_21-49-03.450_2048x1440
 	// パターン3: VRChat_1920x1080_2022-06-02_03-11-38.751
@@ -1476,10 +2243,10 @@ func extractDateFromFilename(filePath string) string {
 	if matches := re2.FindStringSubmatch(filename); len(matches) > 2 {
 		dateStr := matches[1]
 		timeStr := matches[2]
-		return dateStr[0:4] + "-" + dateStr[4:6] + "-" + dateStr[6:8] + "T" + 
+		return dateStr[0:4] + "-" + dateStr[4:6] + "-" + dateStr[6:8] + "T" +
 			timeStr[0:2] + ":" + timeStr[2:4] + ":" + timeStr[4:6]
 	}
-	
+
 	return ""
 }
 
@@ -1529,12 +2296,12 @@ func generateRMQR(url string, isDark bool) (image.Image, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// 黒背景の場合は反転
 	if isDark {
 		return invertImage(qrImage), nil
 	}
-	
+
 	return qrImage, nil
 }
 
@@ -1667,7 +2434,7 @@ func createColoredSquare(width, height int, colorHex string) image.Image {
 	if len(colorHex) >= 6 {
 		fmt.Sscanf(colorHex, "%02x%02x%02x", &r, &g, &b)
 	}
-	
+
 	c := color.RGBA{R: uint8(r), G: uint8(g), B: uint8(b), A: 255}
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
 	draw.Draw(img, img.Bounds(), &image.Uniform{c}, image.Point{}, draw.Src)
@@ -1680,18 +2447,18 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 	if marginTop <= 0 {
 		return nil
 	}
-	
+
 	// テキスト色を RGB に変換
 	r, g, b, _ := textColor.RGBA()
 	colorHex := fmt.Sprintf("%02X%02X%02X", r>>8, g>>8, b>>8)
-	
+
 	// フォント読み込み（日時表示用 - モノスペース）
 	monoFontData := loadFontFromPaths([]string{appConfig.Fonts.MonoFont})
 	var monoFont *truetype.Font
 	if monoFontData != nil {
 		monoFont, _ = truetype.Parse(monoFontData)
 	}
-	
+
 	// 標準フォント読み込み
 	fontData := loadFontFromPaths([]string{appConfig.Fonts.MainFont})
 	if fontData == nil {
@@ -1834,7 +2601,7 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 				draw.Draw(img, iconRect, cameraIcon, image.Point{}, draw.Over)
 			}
 			currentX += iconSize + iconSpacing
-			
+
 			// テキスト: 作成者名（可変幅）
 			authorText := fitText(mainFace, authorName, availableRight-currentX)
 			if authorText != "" {
@@ -1866,7 +2633,7 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 	if scaledQR != nil {
 		draw.Draw(img, image.Rect(qrX, qrY, qrX+scaledWidth, qrY+scaledHeight), scaledQR, image.Point{}, draw.Over)
 	}
-	
+
 	return nil
 }
 
@@ -1876,45 +2643,45 @@ func addMetadataChunksToWebP(webpData []byte, exifData, xmpData []byte) ([]byte,
 	if len(webpData) < 12 {
 		return nil, errors.New("invalid WebP file: too small")
 	}
-	
+
 	// RIFFヘッダ検証
 	if string(webpData[0:4]) != "RIFF" || string(webpData[8:12]) != "WEBP" {
 		return nil, errors.New("invalid WebP file: wrong header")
 	}
-	
+
 	// ファイルサイズ（12バイト以降）
 	fileSize := int(binary.LittleEndian.Uint32(webpData[4:8])) + 8
 	if len(webpData) < fileSize {
 		return nil, errors.New("invalid WebP file: truncated")
 	}
-	
+
 	// チャンクを探す
 	var result bytes.Buffer
 	result.Write(webpData[0:12]) // RIFFヘッダ＋"WEBP"
-	
+
 	pos := 12
 	metadataInserted := false
-	
+
 	for pos < len(webpData) {
 		if pos+8 > len(webpData) {
 			break
 		}
-		
+
 		chunkID := string(webpData[pos : pos+4])
 		chunkSize := int(binary.LittleEndian.Uint32(webpData[pos+4 : pos+8]))
 		chunkDataStart := pos + 8
 		chunkDataEnd := chunkDataStart + chunkSize
-		
+
 		// チャンク境界検証
 		if chunkDataEnd > len(webpData) {
 			return nil, errors.New("invalid WebP file: chunk size exceeds file boundary")
 		}
-		
+
 		// VP8/VP8L/VP8X チャンクの後にメタデータを挿入
 		if !metadataInserted && (chunkID == "VP8 " || chunkID == "VP8L" || chunkID == "VP8X") {
 			// メインチャンクを追加
-			result.Write(webpData[pos : chunkDataEnd])
-			
+			result.Write(webpData[pos:chunkDataEnd])
+
 			// パディング（奇数バイト）
 			if chunkSize%2 == 1 {
 				result.WriteByte(0)
@@ -1922,25 +2689,25 @@ func addMetadataChunksToWebP(webpData []byte, exifData, xmpData []byte) ([]byte,
 			} else {
 				pos = chunkDataEnd
 			}
-			
+
 			// メタデータチャンクを追加
 			if len(exifData) > 0 {
 				if err := writeMetadataChunk(&result, "EXIF", exifData); err != nil {
 					return nil, err
 				}
 			}
-			
+
 			if len(xmpData) > 0 {
 				if err := writeMetadataChunk(&result, "XMP ", xmpData); err != nil {
 					return nil, err
 				}
 			}
-			
+
 			metadataInserted = true
 		} else if chunkID != "EXIF" && chunkID != "XMP " && chunkID != "ICCP" {
 			// 既存のEXIF/XMP/ICCPチャンクはスキップ（重複を避ける）
-			result.Write(webpData[pos : chunkDataEnd])
-			
+			result.Write(webpData[pos:chunkDataEnd])
+
 			// パディング
 			if chunkSize%2 == 1 {
 				result.WriteByte(0)
@@ -1957,12 +2724,12 @@ func addMetadataChunksToWebP(webpData []byte, exifData, xmpData []byte) ([]byte,
 			}
 		}
 	}
-	
+
 	// ファイルサイズを更新
 	resultBytes := result.Bytes()
 	newSize := len(resultBytes) - 8
 	binary.LittleEndian.PutUint32(resultBytes[4:8], uint32(newSize))
-	
+
 	return resultBytes, nil
 }
 
@@ -1971,22 +2738,22 @@ func writeMetadataChunk(buf *bytes.Buffer, chunkID string, data []byte) error {
 	if len(chunkID) != 4 {
 		return errors.New("invalid chunk ID length")
 	}
-	
+
 	// チャンク ID
 	buf.WriteString(chunkID)
-	
+
 	// チャンクサイズ（リトルエンディアン）
 	size := uint32(len(data))
 	binary.Write(buf, binary.LittleEndian, size)
-	
+
 	// チャンクデータ
 	buf.Write(data)
-	
+
 	// パディング（奇数バイト）
 	if len(data)%2 == 1 {
 		buf.WriteByte(0)
 	}
-	
+
 	return nil
 }
 
@@ -2012,13 +2779,13 @@ func addXMPToPNG(pngPath string, xmpData string) error {
 
 	// IEND chunk is always "IEND" + 0 length + CRC (12 bytes at the end)
 	// We want to insert iTXt just before IEND
-	
+
 	// Find IEND chunk
 	iendPos := len(data) - 12
 	if iendPos < 8 {
 		return errors.New("PNG too short for IEND")
 	}
-	
+
 	// Verify IEND chunk
 	if string(data[iendPos+4:iendPos+8]) != "IEND" {
 		return errors.New("invalid IEND chunk")
@@ -2029,12 +2796,12 @@ func addXMPToPNG(pngPath string, xmpData string) error {
 	keyword := "XML:com.adobe.xmp"
 	var chunkBuf bytes.Buffer
 	chunkBuf.Write([]byte(keyword))
-	chunkBuf.WriteByte(0)            // Null separator after keyword
-	chunkBuf.WriteByte(0)            // Compression flag: 0 = uncompressed
-	chunkBuf.WriteByte(0)            // Compression method (not used if uncompressed)
-	chunkBuf.WriteByte(0)            // Null (language tag is empty)
-	chunkBuf.WriteByte(0)            // Null (translated keyword is empty)
-	chunkBuf.Write([]byte(xmpData))  // XMP text data
+	chunkBuf.WriteByte(0)           // Null separator after keyword
+	chunkBuf.WriteByte(0)           // Compression flag: 0 = uncompressed
+	chunkBuf.WriteByte(0)           // Compression method (not used if uncompressed)
+	chunkBuf.WriteByte(0)           // Null (language tag is empty)
+	chunkBuf.WriteByte(0)           // Null (translated keyword is empty)
+	chunkBuf.Write([]byte(xmpData)) // XMP text data
 	chunkData := chunkBuf.Bytes()
 
 	// Build iTXt chunk: length(4) + "iTXt"(4) + data + CRC(4)
@@ -2044,7 +2811,7 @@ func addXMPToPNG(pngPath string, xmpData string) error {
 	newChunk.Write(chunkLen)
 	newChunk.Write([]byte("iTXt"))
 	newChunk.Write(chunkData)
-	
+
 	// Calculate CRC
 	crcData := append([]byte("iTXt"), chunkData...)
 	crcVal := crc32.ChecksumIEEE(crcData)
@@ -2054,9 +2821,9 @@ func addXMPToPNG(pngPath string, xmpData string) error {
 
 	// Assemble final PNG: original[0:iendPos] + iTXt chunk + IEND chunk
 	var result bytes.Buffer
-	result.Write(data[:iendPos])       // Everything before IEND
-	result.Write(newChunk.Bytes())     // New iTXt chunk
-	result.Write(data[iendPos:])       // Original IEND chunk
+	result.Write(data[:iendPos])   // Everything before IEND
+	result.Write(newChunk.Bytes()) // New iTXt chunk
+	result.Write(data[iendPos:])   // Original IEND chunk
 
 	return os.WriteFile(pngPath, result.Bytes(), 0644)
 }
@@ -2126,10 +2893,10 @@ func addXMPToWebP(webpPath string, xmpData string) error {
 				xmpAdded = true
 			}
 		} else if chunkID == "EXIF" {
-			newData.Write(data[offset : nextOffset])
+			newData.Write(data[offset:nextOffset])
 		} else {
 			// その他のチャンクはそのままコピー
-			newData.Write(data[offset : nextOffset])
+			newData.Write(data[offset:nextOffset])
 		}
 
 		offset = nextOffset
@@ -2154,5 +2921,3 @@ func addXMPToWebP(webpPath string, xmpData string) error {
 	// ファイルに書き込み
 	return os.WriteFile(webpPath, finalData, 0644)
 }
-
-

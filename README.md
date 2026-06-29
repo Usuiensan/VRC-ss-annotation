@@ -101,6 +101,63 @@ VRCSSAnnotationTool.exe --auto-annotate image1.png image2.webp image3.jpg
 
 ---
 
+## 👀 VRChat写真フォルダ監視
+
+`watch` サブコマンドで VRChat 写真フォルダ以下を監視し、起動後に追加された画像だけを処理できます。Eagle には元画像を登録し、Amazon Photos 用には `Annotated` 直下へ注釈付き画像または無加工コピーを保存します。
+
+```bash
+VRCSSAnnotationTool.exe watch --root "C:\Users\miwam\OneDrive\Pictures\VRChat"
+```
+
+設定例:
+
+```json
+{
+  "watcher": {
+    "vrchatPhotoRoot": "C:\\Users\\miwam\\OneDrive\\Pictures\\VRChat",
+    "amazonPhotosOutputDir": "",
+    "fileStabilityWaitSeconds": 5,
+    "stableCheckIntervalSeconds": 1,
+    "stableCheckCount": 3,
+    "scanIntervalSeconds": 3
+  },
+  "eagle": {
+    "enabled": true,
+    "baseUrl": "http://localhost:41595",
+    "folderId": "",
+    "folders": []
+  },
+  "state": {
+    "path": "watch-state.jsonl"
+  }
+}
+```
+
+追加サブコマンド:
+
+| コマンド | 説明 |
+| --- | --- |
+| `watch` | VRChat写真フォルダを監視し、新規画像を安定待ち後に処理 |
+| `process-file <path>` | 単一ファイルを手動処理 |
+| `test-eagle` | Eagle Web API V2 (`/api/v2/app/info`) の接続確認 |
+| `print-config` | 読み込み済み設定をJSONで表示 |
+| `retry-failed` | `watch-state.jsonl` の失敗エントリを再試行 |
+
+種別分類と出力:
+
+| 種別 | 判定 | Eagle | Amazon Photos |
+| --- | --- | --- | --- |
+| `photo` | `VRChat_YYYY-MM-DD_HH-MM-SS.xxx_...` | 元画像を `type:photo`、月、ワールド情報付きで登録 | 上部注釈と rMQR 付きコピー |
+| `print` | パスに `\Print\` を含む | 元画像を `type:print` で登録 | ワールドIDがあれば rMQR のみ追加、なければ無加工コピー |
+| `sticker` | パスに `\Stickers\` を含む | 元画像を `type:sticker` で登録 | 無加工コピー |
+| `stamp` | パスに `\Stamp\` を含む | 元画像を `type:stamp` で登録 | 無加工コピー |
+| `emoji` | パスまたはファイル名に `emoji` / `emote` 系文字列 | 元画像を `type:emoji` で登録 | 無加工コピー |
+| `unknown` | その他 | 元画像を `type:unknown` で登録 | 無加工コピー |
+
+Eagle 連携は `POST http://localhost:41595/api/v2/item/add` を使います。Eagle が起動していない場合でも Amazon Photos 出力は独立して実行され、失敗内容は `watch-state.jsonl` に追記されます。
+
+---
+
 ## 📋 出力ファイル
 
 ### JSON 出力の例
