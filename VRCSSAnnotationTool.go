@@ -879,19 +879,24 @@ func addRMQROnlyCopy(sourcePath, outputPath, worldURL string) error {
 	if err != nil {
 		return err
 	}
-	defer outFile.Close()
+	var encodeErr error
 	switch strings.ToLower(format) {
 	case "jpeg", "jpg":
-		return jpeg.Encode(outFile, outImg, &jpeg.Options{Quality: 95})
+		encodeErr = jpeg.Encode(outFile, outImg, &jpeg.Options{Quality: 95})
 	case "webp":
 		quality := float32(appConfig.Image.WebPCompressionQuality)
 		if quality <= 0 || quality > 100 {
 			quality = 100
 		}
-		return webp.Encode(outFile, outImg, &webp.Options{Lossless: appConfig.Image.WebPLossless, Quality: quality})
+		encodeErr = webp.Encode(outFile, outImg, &webp.Options{Lossless: appConfig.Image.WebPLossless, Quality: quality})
 	default:
-		return png.Encode(outFile, outImg)
+		encodeErr = png.Encode(outFile, outImg)
 	}
+	closeErr := outFile.Close()
+	if encodeErr != nil {
+		return encodeErr
+	}
+	return closeErr
 }
 
 func amazonOutputDir() string {
@@ -917,9 +922,12 @@ func copyFile(sourcePath, outputPath string) error {
 	if err != nil {
 		return err
 	}
-	defer out.Close()
-	_, err = io.Copy(out, in)
-	return err
+	_, copyErr := io.Copy(out, in)
+	closeErr := out.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
 }
 
 func testEagleConnection() error {
@@ -1994,9 +2002,12 @@ func addMetadataToImage(imagePath string, date string, worldName string, authorN
 			if err != nil {
 				return err
 			}
-			defer outFile.Close()
 			_, err = outFile.Write(buf.Bytes())
 			if err != nil {
+				_ = outFile.Close()
+				return err
+			}
+			if err := outFile.Close(); err != nil {
 				return err
 			}
 
@@ -2061,8 +2072,11 @@ func addMetadataToImage(imagePath string, date string, worldName string, authorN
 			if err != nil {
 				return err
 			}
-			defer outFile.Close()
 			if err := png.Encode(outFile, outImg); err != nil {
+				_ = outFile.Close()
+				return err
+			}
+			if err := outFile.Close(); err != nil {
 				return err
 			}
 
@@ -2165,9 +2179,12 @@ func addMetadataToImage(imagePath string, date string, worldName string, authorN
 		if err != nil {
 			return err
 		}
-		defer outFile.Close()
 		_, err = outFile.Write(buf.Bytes())
 		if err != nil {
+			_ = outFile.Close()
+			return err
+		}
+		if err := outFile.Close(); err != nil {
 			return err
 		}
 
@@ -2194,8 +2211,11 @@ func addMetadataToImage(imagePath string, date string, worldName string, authorN
 		if err != nil {
 			return err
 		}
-		defer outFile.Close()
 		if err := png.Encode(outFile, newImg); err != nil {
+			_ = outFile.Close()
+			return err
+		}
+		if err := outFile.Close(); err != nil {
 			return err
 		}
 
