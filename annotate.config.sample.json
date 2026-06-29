@@ -34,5 +34,25 @@
     "webpLossless": true,
     "outputFormat": "auto",
     "supportedInputExtensions": [".png", ".webp", ".jpg", ".jpeg"]
+  },
+  "watcher": {
+    "vrchatPhotoRoot": "C:\\Users\\miwam\\OneDrive\\Pictures\\VRChat",
+    "amazonPhotosOutputDir": "",
+    "fileStabilityWaitSeconds": 5,
+    "stableCheckIntervalSeconds": 1,
+    "stableCheckCount": 3,
+    "scanIntervalSeconds": 3
+  },
+  "eagle": {
+    "enabled": true,
+    "baseUrl": "http://localhost:41595",
+    "folderId": "",
+    "folders": []
+  },
+  "state": {
+    "path": "watch-state.jsonl"
+  },
+  "notifications": {
+    "toastEnabled": true
   }
 }
