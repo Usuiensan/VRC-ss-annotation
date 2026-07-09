@@ -339,6 +339,29 @@ func TestPollReadsOnlyAppendedLogLines(t *testing.T) {
 	}
 }
 
+func TestInitialPollUsesLogDateForVisitLog(t *testing.T) {
+	logDir := t.TempDir()
+	visitLogDir := t.TempDir()
+	logPath := filepath.Join(logDir, "output_log_2026-07-09_23-58-00.txt")
+	if err := os.WriteFile(logPath, []byte("2026.07.09 23:58:01 Log -  [Behaviour] Joining wrld_initial:12345~friends(usr_owner)\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tracker := &VRChatLogTracker{
+		logDir:       logDir,
+		visitLogDir:  visitLogDir,
+		presentUsers: make(map[string]bool),
+	}
+	tracker.poll()
+
+	if _, err := os.Stat(filepath.Join(visitLogDir, "vrchat-visits-2026-07-09.jsonl")); err != nil {
+		t.Fatalf("visit log should use log timestamp date: %v", err)
+	}
+	if tracker.day != "2026-07-09" {
+		t.Fatalf("tracker day = %q; want log date", tracker.day)
+	}
+}
+
 func readVisitEvents(t *testing.T, path string) []VRChatVisitEvent {
 	t.Helper()
 	f, err := os.Open(path)

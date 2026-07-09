@@ -719,7 +719,6 @@ func startVRChatLogTracker() *VRChatLogTracker {
 		logDir:       logDir,
 		visitLogDir:  visitLogDir,
 		pollInterval: time.Duration(interval) * time.Second,
-		day:          time.Now().Format("2006-01-02"),
 		presentUsers: make(map[string]bool),
 	}
 	if err := os.MkdirAll(visitLogDir, 0755); err != nil {
@@ -748,7 +747,9 @@ func (t *VRChatLogTracker) Run() {
 }
 
 func (t *VRChatLogTracker) poll() {
-	t.writeDayRolloverIfNeeded(time.Now())
+	if t.hasActiveVisit() {
+		t.writeDayRolloverIfNeeded(time.Now())
+	}
 	latest, err := latestVRChatLogFile(t.logDir)
 	if err != nil || latest == "" {
 		return
@@ -778,6 +779,12 @@ func (t *VRChatLogTracker) poll() {
 		t.appendEvent(now, "log_file_changed", "", "新しいVRChatログを追跡します")
 	}
 	t.readNewLines(latest)
+}
+
+func (t *VRChatLogTracker) hasActiveVisit() bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.worldID != "" || t.instanceID != ""
 }
 
 func latestVRChatLogFile(logDir string) (string, error) {
