@@ -106,7 +106,7 @@ VRCSSAnnotationTool.exe --auto-annotate image1.png image2.webp image3.jpg
 `watch` サブコマンドで VRChat 写真フォルダ以下を監視し、起動後に追加された画像だけを処理できます。Eagle には元画像を登録し、Amazon Photos 用には `Annotated` 直下へ注釈付き画像または無加工コピーを保存します。
 
 ```bash
-VRCSSAnnotationTool.exe watch --root "C:\Users\miwam\OneDrive\Pictures\VRChat"
+VRCSSAnnotationTool.exe watch --root "C:\FURUKAWA\VRChat_pic"
 ```
 
 設定例:
@@ -114,7 +114,7 @@ VRCSSAnnotationTool.exe watch --root "C:\Users\miwam\OneDrive\Pictures\VRChat"
 ```json
 {
   "watcher": {
-    "vrchatPhotoRoot": "C:\\Users\\miwam\\OneDrive\\Pictures\\VRChat",
+    "vrchatPhotoRoot": "C:\\FURUKAWA\\VRChat_pic",
     "amazonPhotosOutputDir": "",
     "fileStabilityWaitSeconds": 5,
     "stableCheckIntervalSeconds": 1,
