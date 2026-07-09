@@ -36,12 +36,15 @@
     "supportedInputExtensions": [".png", ".webp", ".jpg", ".jpeg"]
   },
   "watcher": {
-    "vrchatPhotoRoot": "D:\\VRChat_pic",
+    "vrchatPhotoRoot": "C:\\FURUKAWA\\VRChat_pic",
     "amazonPhotosOutputDir": "",
+    "vrchatLogDir": "",
+    "visitLogDir": "visit-logs",
     "fileStabilityWaitSeconds": 5,
     "stableCheckIntervalSeconds": 1,
     "stableCheckCount": 3,
-    "scanIntervalSeconds": 3
+    "scanIntervalSeconds": 3,
+    "logPollIntervalSeconds": 2
   },
   "eagle": {
     "enabled": true,

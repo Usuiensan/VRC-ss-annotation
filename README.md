@@ -116,10 +116,13 @@ VRCSSAnnotationTool.exe watch --root "C:\FURUKAWA\VRChat_pic"
   "watcher": {
     "vrchatPhotoRoot": "C:\\FURUKAWA\\VRChat_pic",
     "amazonPhotosOutputDir": "",
+    "vrchatLogDir": "",
+    "visitLogDir": "visit-logs",
     "fileStabilityWaitSeconds": 5,
     "stableCheckIntervalSeconds": 1,
     "stableCheckCount": 3,
-    "scanIntervalSeconds": 3
+    "scanIntervalSeconds": 3,
+    "logPollIntervalSeconds": 2
   },
   "eagle": {
     "enabled": true,
@@ -155,6 +158,8 @@ VRCSSAnnotationTool.exe watch --root "C:\FURUKAWA\VRChat_pic"
 | `unknown` | その他 | 元画像を `type:unknown` で登録 | 無加工コピー |
 
 Eagle 連携は `POST http://localhost:41595/api/v2/item/add` を使います。Eagle が起動していない場合でも Amazon Photos 出力は独立して実行され、失敗内容は `watch-state.jsonl` に追記されます。
+
+`watch` 実行中は VRChat の `output_log_*.txt` も追跡します。`vrchatLogDir` が空の場合は `%USERPROFILE%\AppData\LocalLow\VRChat\VRChat` を使います。ワールド移動、同席ユーザーの join/leave は `visitLogDir` 配下に `vrchat-visits-YYYY-MM-DD.jsonl` として日別に記録されます。写真メタデータのワールドIDまたはワールド名が空の場合は、撮影時刻に近いログ上の滞在ワールドで補完し、Eagle の `wrld:*` / `user:*` タグと Amazon Photos 用の焼き込みに使います。ログから補完したワールドは、焼き込み時に通常の位置アイコンではなく鍵アイコンで表示します。
 
 ---
 

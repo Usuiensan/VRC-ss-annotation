@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"compress/zlib"
 	"encoding/binary"
@@ -41,6 +42,7 @@ import (
 var logMutex sync.Mutex
 var stateMutex sync.Mutex
 var configMutex sync.Mutex
+var vrchatContext *VRChatLogTracker
 
 // グローバルコンフィグ構造体
 var appConfig *Config
@@ -97,10 +99,13 @@ type ImageConfig struct {
 type WatcherConfig struct {
 	VRChatPhotoRoot            string `json:"vrchatPhotoRoot"`
 	AmazonPhotosOutputDir      string `json:"amazonPhotosOutputDir"`
+	VRChatLogDir               string `json:"vrchatLogDir"`
+	VisitLogDir                string `json:"visitLogDir"`
 	FileStabilityWaitSeconds   int    `json:"fileStabilityWaitSeconds"`
 	StableCheckIntervalSeconds int    `json:"stableCheckIntervalSeconds"`
 	StableCheckCount           int    `json:"stableCheckCount"`
 	ScanIntervalSeconds        int    `json:"scanIntervalSeconds"`
+	LogPollIntervalSeconds     int    `json:"logPollIntervalSeconds"`
 }
 
 type EagleConfig struct {
@@ -162,10 +167,13 @@ func getDefaultConfig() *Config {
 		Watcher: WatcherConfig{
 			VRChatPhotoRoot:            "",
 			AmazonPhotosOutputDir:      "",
+			VRChatLogDir:               "",
+			VisitLogDir:                "visit-logs",
 			FileStabilityWaitSeconds:   5,
 			StableCheckIntervalSeconds: 1,
 			StableCheckCount:           3,
 			ScanIntervalSeconds:        3,
+			LogPollIntervalSeconds:     2,
 		},
 		Eagle: EagleConfig{
 			Enabled: &defaultEagleEnabled,
@@ -295,6 +303,12 @@ func mergeConfig(def, override *Config) *Config {
 	if override.Watcher.AmazonPhotosOutputDir != "" {
 		def.Watcher.AmazonPhotosOutputDir = override.Watcher.AmazonPhotosOutputDir
 	}
+	if override.Watcher.VRChatLogDir != "" {
+		def.Watcher.VRChatLogDir = override.Watcher.VRChatLogDir
+	}
+	if override.Watcher.VisitLogDir != "" {
+		def.Watcher.VisitLogDir = override.Watcher.VisitLogDir
+	}
 	if override.Watcher.FileStabilityWaitSeconds > 0 {
 		def.Watcher.FileStabilityWaitSeconds = override.Watcher.FileStabilityWaitSeconds
 	}
@@ -306,6 +320,9 @@ func mergeConfig(def, override *Config) *Config {
 	}
 	if override.Watcher.ScanIntervalSeconds > 0 {
 		def.Watcher.ScanIntervalSeconds = override.Watcher.ScanIntervalSeconds
+	}
+	if override.Watcher.LogPollIntervalSeconds > 0 {
+		def.Watcher.LogPollIntervalSeconds = override.Watcher.LogPollIntervalSeconds
 	}
 	if override.Eagle.Enabled != nil {
 		def.Eagle.Enabled = override.Eagle.Enabled
@@ -447,31 +464,35 @@ const (
 )
 
 type PhotoRecord struct {
-	SourcePath   string     `json:"source_path"`
-	SourceType   SourceType `json:"source_type"`
-	WorldID      string     `json:"world_id,omitempty"`
-	WorldName    string     `json:"world_name,omitempty"`
-	InstanceID   string     `json:"instance_id,omitempty"`
-	InstanceType string     `json:"instance_type,omitempty"`
-	ShootDate    string     `json:"shoot_date,omitempty"`
-	AuthorName   string     `json:"author_name,omitempty"`
-	PresentUsers []string   `json:"present_users,omitempty"`
-	OutputPath   string     `json:"output_path,omitempty"`
+	SourcePath         string     `json:"source_path"`
+	SourceType         SourceType `json:"source_type"`
+	WorldID            string     `json:"world_id,omitempty"`
+	WorldName          string     `json:"world_name,omitempty"`
+	InstanceID         string     `json:"instance_id,omitempty"`
+	InstanceType       string     `json:"instance_type,omitempty"`
+	ShootDate          string     `json:"shoot_date,omitempty"`
+	AuthorName         string     `json:"author_name,omitempty"`
+	PresentUsers       []string   `json:"present_users,omitempty"`
+	OutputPath         string     `json:"output_path,omitempty"`
+	WorldFilledFromLog bool       `json:"world_filled_from_log,omitempty"`
 }
 
 type ProcessStateEntry struct {
-	Timestamp    string     `json:"timestamp"`
-	SourcePath   string     `json:"source_path"`
-	SourceType   SourceType `json:"source_type"`
-	OutputPath   string     `json:"output_path,omitempty"`
-	EagleStatus  string     `json:"eagle_status"`
-	AmazonStatus string     `json:"amazon_status"`
-	WorldID      string     `json:"world_id,omitempty"`
-	WorldName    string     `json:"world_name,omitempty"`
-	InstanceID   string     `json:"instance_id,omitempty"`
-	Error        string     `json:"error,omitempty"`
-	Size         int64      `json:"size"`
-	ModTimeUnix  int64      `json:"mod_time_unix"`
+	Timestamp          string     `json:"timestamp"`
+	SourcePath         string     `json:"source_path"`
+	SourceType         SourceType `json:"source_type"`
+	OutputPath         string     `json:"output_path,omitempty"`
+	EagleStatus        string     `json:"eagle_status"`
+	AmazonStatus       string     `json:"amazon_status"`
+	WorldID            string     `json:"world_id,omitempty"`
+	WorldName          string     `json:"world_name,omitempty"`
+	InstanceID         string     `json:"instance_id,omitempty"`
+	InstanceType       string     `json:"instance_type,omitempty"`
+	PresentUsers       []string   `json:"present_users,omitempty"`
+	WorldFilledFromLog bool       `json:"world_filled_from_log,omitempty"`
+	Error              string     `json:"error,omitempty"`
+	Size               int64      `json:"size"`
+	ModTimeUnix        int64      `json:"mod_time_unix"`
 }
 
 type eagleAddRequest struct {
@@ -567,7 +588,556 @@ func buildPhotoRecord(path string, sourceType SourceType) PhotoRecord {
 	if record.ShootDate == "" {
 		record.ShootDate = extractDateFromFilename(path)
 	}
+	if vrchatContext != nil {
+		snap := vrchatContext.SnapshotAt(photoTimeForRecord(record, path))
+		if record.WorldID == "" && snap.WorldID != "" {
+			record.WorldID = snap.WorldID
+			record.WorldFilledFromLog = true
+		}
+		if record.WorldName == "" && snap.WorldName != "" {
+			record.WorldName = snap.WorldName
+			record.WorldFilledFromLog = true
+		}
+		if record.InstanceID == "" {
+			record.InstanceID = snap.InstanceID
+		}
+		if record.InstanceType == "" {
+			record.InstanceType = snap.InstanceType
+		}
+		if len(record.PresentUsers) == 0 {
+			record.PresentUsers = snap.PresentUsers
+		}
+	}
 	return record
+}
+
+func photoTimeForRecord(record PhotoRecord, path string) time.Time {
+	if t, ok := parsePhotoTime(record.ShootDate); ok {
+		return t
+	}
+	if info, err := os.Stat(path); err == nil {
+		return info.ModTime()
+	}
+	return time.Now()
+}
+
+func parsePhotoTime(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false
+	}
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04:05.0000000-07:00",
+		"2006-01-02T15:04:05.0000000",
+		"2006-01-02T15:04:05.000",
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04:05",
+	}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, value); err == nil {
+			return t, true
+		}
+		if t, err := time.ParseInLocation(layout, value, time.Local); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
+type VRChatContextSnapshot struct {
+	At           time.Time `json:"at"`
+	WorldID      string    `json:"world_id,omitempty"`
+	WorldName    string    `json:"world_name,omitempty"`
+	InstanceID   string    `json:"instance_id,omitempty"`
+	InstanceType string    `json:"instance_type,omitempty"`
+	PresentUsers []string  `json:"present_users,omitempty"`
+}
+
+type VRChatVisitEvent struct {
+	Timestamp       string   `json:"timestamp"`
+	Event           string   `json:"event"`
+	LogPath         string   `json:"log_path,omitempty"`
+	WorldID         string   `json:"world_id,omitempty"`
+	WorldName       string   `json:"world_name,omitempty"`
+	InstanceID      string   `json:"instance_id,omitempty"`
+	InstanceType    string   `json:"instance_type,omitempty"`
+	UserName        string   `json:"user_name,omitempty"`
+	PresentUsers    []string `json:"present_users,omitempty"`
+	VisitStartedAt  string   `json:"visit_started_at,omitempty"`
+	VisitEndedAt    string   `json:"visit_ended_at,omitempty"`
+	DurationSeconds int64    `json:"duration_seconds,omitempty"`
+	Continues       bool     `json:"continues,omitempty"`
+	Note            string   `json:"note,omitempty"`
+}
+
+type VRChatLogTracker struct {
+	mu           sync.RWMutex
+	logDir       string
+	visitLogDir  string
+	pollInterval time.Duration
+	currentLog   string
+	offset       int64
+	day          string
+
+	worldID        string
+	worldName      string
+	instanceID     string
+	instanceType   string
+	presentUsers   map[string]bool
+	history        []VRChatContextSnapshot
+	visitStartedAt time.Time
+}
+
+func startVRChatLogTracker() *VRChatLogTracker {
+	logDir := strings.TrimSpace(appConfig.Watcher.VRChatLogDir)
+	if logDir == "" {
+		logDir = defaultVRChatLogDir()
+	}
+	if logDir == "" {
+		appendLog("VRChatログディレクトリを特定できませんでした")
+		return nil
+	}
+	if info, err := os.Stat(logDir); err != nil || !info.IsDir() {
+		appendLog(fmt.Sprintf("VRChatログディレクトリが見つかりません: %s", logDir))
+		return nil
+	}
+	visitLogDir := strings.TrimSpace(appConfig.Watcher.VisitLogDir)
+	if visitLogDir == "" {
+		visitLogDir = "visit-logs"
+	}
+	interval := appConfig.Watcher.LogPollIntervalSeconds
+	if interval <= 0 {
+		interval = 2
+	}
+	tracker := &VRChatLogTracker{
+		logDir:       logDir,
+		visitLogDir:  visitLogDir,
+		pollInterval: time.Duration(interval) * time.Second,
+		day:          time.Now().Format("2006-01-02"),
+		presentUsers: make(map[string]bool),
+	}
+	if err := os.MkdirAll(visitLogDir, 0755); err != nil {
+		appendLog(fmt.Sprintf("訪問ログディレクトリを作成できません: %v", err))
+		return nil
+	}
+	go tracker.Run()
+	return tracker
+}
+
+func defaultVRChatLogDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, "AppData", "LocalLow", "VRChat", "VRChat")
+}
+
+func (t *VRChatLogTracker) Run() {
+	t.poll()
+	ticker := time.NewTicker(t.pollInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		t.poll()
+	}
+}
+
+func (t *VRChatLogTracker) poll() {
+	t.writeDayRolloverIfNeeded(time.Now())
+	latest, err := latestVRChatLogFile(t.logDir)
+	if err != nil || latest == "" {
+		return
+	}
+	t.mu.RLock()
+	currentLog := t.currentLog
+	t.mu.RUnlock()
+	if latest != currentLog {
+		now := time.Now()
+		t.mu.Lock()
+		prevSnap := t.snapshotLocked(now)
+		prevStartedAt := t.visitStartedAt
+		prevLog := t.currentLog
+		t.currentLog = latest
+		t.offset = 0
+		t.worldID = ""
+		t.worldName = ""
+		t.instanceID = ""
+		t.instanceType = ""
+		t.presentUsers = make(map[string]bool)
+		t.visitStartedAt = time.Time{}
+		t.history = append(t.history, t.snapshotLocked(now))
+		t.mu.Unlock()
+		if prevSnap.WorldID != "" || prevSnap.InstanceID != "" {
+			t.appendVisitEnd(now, prevStartedAt, prevSnap, prevLog, "log_file_changed")
+		}
+		t.appendEvent(now, "log_file_changed", "", "新しいVRChatログを追跡します")
+	}
+	t.readNewLines(latest)
+}
+
+func latestVRChatLogFile(logDir string) (string, error) {
+	var latestPath string
+	var latestTime time.Time
+	err := filepath.WalkDir(logDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		name := strings.ToLower(d.Name())
+		if !strings.HasPrefix(name, "output_log_") || !strings.HasSuffix(name, ".txt") {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		if latestPath == "" || info.ModTime().After(latestTime) {
+			latestPath = path
+			latestTime = info.ModTime()
+		}
+		return nil
+	})
+	return latestPath, err
+}
+
+func (t *VRChatLogTracker) readNewLines(path string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	t.mu.RLock()
+	offset := t.offset
+	t.mu.RUnlock()
+	if offset > 0 {
+		if _, err := f.Seek(offset, io.SeekStart); err != nil {
+			return
+		}
+	}
+	scanner := bufio.NewScanner(f)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+	for scanner.Scan() {
+		t.handleLogLine(path, scanner.Text())
+	}
+	if pos, err := f.Seek(0, io.SeekCurrent); err == nil {
+		t.mu.Lock()
+		t.offset = pos
+		t.mu.Unlock()
+	}
+}
+
+func (t *VRChatLogTracker) handleLogLine(logPath, line string) {
+	ts, ok := parseVRChatLogTime(line)
+	if !ok {
+		ts = time.Now()
+	}
+	t.writeDayRolloverIfNeeded(ts)
+	if worldID, instanceID, matched := parseJoiningWorld(line); matched {
+		t.mu.Lock()
+		prevSnap := t.snapshotLocked(ts)
+		prevStartedAt := t.visitStartedAt
+		t.worldID = worldID
+		t.instanceID = instanceID
+		t.instanceType = classifyInstanceType(instanceID)
+		t.worldName = ""
+		t.presentUsers = make(map[string]bool)
+		t.visitStartedAt = ts
+		snap := t.snapshotLocked(ts)
+		t.history = append(t.history, snap)
+		t.mu.Unlock()
+		if prevSnap.WorldID != "" || prevSnap.InstanceID != "" {
+			t.appendVisitEnd(ts, prevStartedAt, prevSnap, logPath, "world_leave")
+		}
+		t.appendEventWithSnapshot(ts, "world_join", "", logPath, snap)
+		return
+	}
+	if worldName, matched := parseEnteringRoom(line); matched {
+		t.mu.Lock()
+		t.worldName = worldName
+		snap := t.snapshotLocked(ts)
+		t.history = append(t.history, snap)
+		t.mu.Unlock()
+		t.appendEventWithSnapshot(ts, "world_name", "", logPath, snap)
+		return
+	}
+	if userName, matched := parsePlayerJoined(line); matched {
+		t.mu.Lock()
+		t.presentUsers[userName] = true
+		snap := t.snapshotLocked(ts)
+		t.history = append(t.history, snap)
+		t.mu.Unlock()
+		t.appendEventWithSnapshot(ts, "player_join", userName, logPath, snap)
+		return
+	}
+	if userName, matched := parsePlayerLeft(line); matched {
+		t.mu.Lock()
+		delete(t.presentUsers, userName)
+		snap := t.snapshotLocked(ts)
+		t.history = append(t.history, snap)
+		t.mu.Unlock()
+		t.appendEventWithSnapshot(ts, "player_left", userName, logPath, snap)
+		return
+	}
+}
+
+func parseVRChatLogTime(line string) (time.Time, bool) {
+	re := regexp.MustCompile(`^(\d{4}\.\d{2}\.\d{2} \d{2}:\d{2}:\d{2})`)
+	m := re.FindStringSubmatch(line)
+	if len(m) != 2 {
+		return time.Time{}, false
+	}
+	t, err := time.ParseInLocation("2006.01.02 15:04:05", m[1], time.Local)
+	return t, err == nil
+}
+
+func parseJoiningWorld(line string) (string, string, bool) {
+	re := regexp.MustCompile(`(?i)\bJoining\s+(wrld_[A-Za-z0-9-]+):([^\s]+)`)
+	m := re.FindStringSubmatch(line)
+	if len(m) != 3 {
+		return "", "", false
+	}
+	return strings.TrimSpace(m[1]), strings.TrimSpace(m[2]), true
+}
+
+func parseEnteringRoom(line string) (string, bool) {
+	patterns := []string{
+		`(?i)Entering Room:\s*(.+)$`,
+		`(?i)Joining or Creating Room:\s*(.+)$`,
+	}
+	for _, pattern := range patterns {
+		re := regexp.MustCompile(pattern)
+		m := re.FindStringSubmatch(line)
+		if len(m) == 2 {
+			name := strings.TrimSpace(m[1])
+			if name != "" {
+				return name, true
+			}
+		}
+	}
+	return "", false
+}
+
+func parsePlayerJoined(line string) (string, bool) {
+	re := regexp.MustCompile(`(?i)OnPlayerJoined[:\s]+(.+)$`)
+	m := re.FindStringSubmatch(line)
+	if len(m) != 2 {
+		return "", false
+	}
+	return cleanVRChatUserName(m[1]), cleanVRChatUserName(m[1]) != ""
+}
+
+func parsePlayerLeft(line string) (string, bool) {
+	re := regexp.MustCompile(`(?i)OnPlayerLeft[:\s]+(.+)$`)
+	m := re.FindStringSubmatch(line)
+	if len(m) != 2 {
+		return "", false
+	}
+	return cleanVRChatUserName(m[1]), cleanVRChatUserName(m[1]) != ""
+}
+
+func cleanVRChatUserName(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, `"'`)
+	if idx := strings.Index(value, " ("); idx > 0 {
+		value = value[:idx]
+	}
+	value = strings.Trim(value, `"'`)
+	return strings.TrimSpace(value)
+}
+
+func classifyInstanceType(instanceID string) string {
+	lower := strings.ToLower(instanceID)
+	switch {
+	case strings.Contains(lower, "~private"):
+		return "private"
+	case strings.Contains(lower, "~friends"):
+		return "friends"
+	case strings.Contains(lower, "~hidden"):
+		return "hidden"
+	case strings.Contains(lower, "~group"):
+		return "group"
+	case instanceID != "":
+		return "public"
+	default:
+		return ""
+	}
+}
+
+func (t *VRChatLogTracker) SnapshotAt(at time.Time) VRChatContextSnapshot {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if len(t.history) == 0 {
+		return t.snapshotLocked(at)
+	}
+	if at.IsZero() {
+		return t.history[len(t.history)-1]
+	}
+	if at.Before(t.history[0].At) {
+		return VRChatContextSnapshot{At: at}
+	}
+	selected := t.history[0]
+	for _, snap := range t.history {
+		if snap.At.After(at) {
+			break
+		}
+		selected = snap
+	}
+	return selected
+}
+
+func (t *VRChatLogTracker) snapshotLocked(at time.Time) VRChatContextSnapshot {
+	users := make([]string, 0, len(t.presentUsers))
+	for user := range t.presentUsers {
+		users = append(users, user)
+	}
+	sort.Strings(users)
+	return VRChatContextSnapshot{
+		At:           at,
+		WorldID:      t.worldID,
+		WorldName:    t.worldName,
+		InstanceID:   t.instanceID,
+		InstanceType: t.instanceType,
+		PresentUsers: users,
+	}
+}
+
+func (t *VRChatLogTracker) appendEventWithSnapshot(at time.Time, event, userName, logPath string, snap VRChatContextSnapshot) {
+	t.mu.RLock()
+	visitStartedAt := t.visitStartedAt
+	t.mu.RUnlock()
+	entry := VRChatVisitEvent{
+		Timestamp:      at.Format(time.RFC3339),
+		Event:          event,
+		LogPath:        logPath,
+		WorldID:        snap.WorldID,
+		WorldName:      snap.WorldName,
+		InstanceID:     snap.InstanceID,
+		InstanceType:   snap.InstanceType,
+		UserName:       userName,
+		PresentUsers:   snap.PresentUsers,
+		VisitStartedAt: formatOptionalTime(visitStartedAt),
+	}
+	t.writeVisitEvent(at, entry)
+}
+
+func (t *VRChatLogTracker) appendEvent(at time.Time, event, userName, note string) {
+	snap := t.SnapshotAt(at)
+	t.mu.RLock()
+	logPath := t.currentLog
+	visitStartedAt := t.visitStartedAt
+	t.mu.RUnlock()
+	entry := VRChatVisitEvent{
+		Timestamp:      at.Format(time.RFC3339),
+		Event:          event,
+		LogPath:        logPath,
+		WorldID:        snap.WorldID,
+		WorldName:      snap.WorldName,
+		InstanceID:     snap.InstanceID,
+		InstanceType:   snap.InstanceType,
+		UserName:       userName,
+		PresentUsers:   snap.PresentUsers,
+		VisitStartedAt: formatOptionalTime(visitStartedAt),
+		Note:           note,
+	}
+	t.writeVisitEvent(at, entry)
+}
+
+func (t *VRChatLogTracker) appendVisitEnd(at, startedAt time.Time, snap VRChatContextSnapshot, logPath, event string) {
+	entry := VRChatVisitEvent{
+		Timestamp:       at.Format(time.RFC3339),
+		Event:           event,
+		LogPath:         logPath,
+		WorldID:         snap.WorldID,
+		WorldName:       snap.WorldName,
+		InstanceID:      snap.InstanceID,
+		InstanceType:    snap.InstanceType,
+		PresentUsers:    snap.PresentUsers,
+		VisitStartedAt:  formatOptionalTime(startedAt),
+		VisitEndedAt:    at.Format(time.RFC3339),
+		DurationSeconds: durationSeconds(startedAt, at),
+	}
+	t.writeVisitEvent(at, entry)
+}
+
+func formatOptionalTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format(time.RFC3339)
+}
+
+func durationSeconds(start, end time.Time) int64 {
+	if start.IsZero() || end.IsZero() || end.Before(start) {
+		return 0
+	}
+	return int64(end.Sub(start).Seconds())
+}
+
+func (t *VRChatLogTracker) writeDayRolloverIfNeeded(at time.Time) {
+	day := at.Format("2006-01-02")
+	t.mu.Lock()
+	oldDay := t.day
+	if oldDay == "" {
+		t.day = day
+		t.mu.Unlock()
+		return
+	}
+	if oldDay == day {
+		t.mu.Unlock()
+		return
+	}
+	snap := t.snapshotLocked(at)
+	visitStartedAt := t.visitStartedAt
+	t.day = day
+	t.history = append(t.history, snap)
+	t.mu.Unlock()
+	if snap.WorldID == "" && snap.InstanceID == "" {
+		return
+	}
+	oldEvent := VRChatVisitEvent{
+		Timestamp:       at.Format(time.RFC3339),
+		Event:           "day_rollover_end",
+		WorldID:         snap.WorldID,
+		WorldName:       snap.WorldName,
+		InstanceID:      snap.InstanceID,
+		InstanceType:    snap.InstanceType,
+		PresentUsers:    snap.PresentUsers,
+		VisitStartedAt:  formatOptionalTime(visitStartedAt),
+		VisitEndedAt:    at.Format(time.RFC3339),
+		DurationSeconds: durationSeconds(visitStartedAt, at),
+		Continues:       true,
+		Note:            "日付変更時点でVRChat滞在中の可能性があります",
+	}
+	newEvent := oldEvent
+	newEvent.Event = "day_rollover_start"
+	newEvent.VisitEndedAt = ""
+	t.writeVisitEventForDay(oldDay, oldEvent)
+	t.writeVisitEventForDay(day, newEvent)
+}
+
+func (t *VRChatLogTracker) writeVisitEvent(at time.Time, entry VRChatVisitEvent) {
+	t.writeVisitEventForDay(at.Format("2006-01-02"), entry)
+}
+
+func (t *VRChatLogTracker) writeVisitEventForDay(day string, entry VRChatVisitEvent) {
+	if day == "" {
+		day = time.Now().Format("2006-01-02")
+	}
+	if err := os.MkdirAll(t.visitLogDir, 0755); err != nil {
+		appendLog(fmt.Sprintf("訪問ログディレクトリを作成できません: %v", err))
+		return
+	}
+	path := filepath.Join(t.visitLogDir, "vrchat-visits-"+day+".jsonl")
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		appendLog(fmt.Sprintf("訪問ログを書き込めません: %v", err))
+		return
+	}
+	defer f.Close()
+	if err := json.NewEncoder(f).Encode(entry); err != nil {
+		appendLog(fmt.Sprintf("訪問ログをエンコードできません: %v", err))
+	}
 }
 
 func waitForStableFile(path string) error {
@@ -611,6 +1181,9 @@ func waitForStableFile(path string) error {
 }
 
 func watchPhotoRoot() error {
+	if vrchatContext == nil {
+		vrchatContext = startVRChatLogTracker()
+	}
 	root := appConfig.Watcher.VRChatPhotoRoot
 	if root == "" {
 		return errors.New("watcher.vrchatPhotoRoot が必要です。watch -root <path> を渡すか annotate.config.json に設定してください")
@@ -704,6 +1277,9 @@ func processWatchedFile(path string, force bool) ProcessStateEntry {
 	entry.WorldID = record.WorldID
 	entry.WorldName = record.WorldName
 	entry.InstanceID = record.InstanceID
+	entry.InstanceType = record.InstanceType
+	entry.PresentUsers = record.PresentUsers
+	entry.WorldFilledFromLog = record.WorldFilledFromLog
 
 	if !eagleEnabled() {
 		entry.EagleStatus = "skipped"
@@ -829,7 +1405,11 @@ func exportToAmazon(record PhotoRecord) (string, error) {
 		if record.WorldID != "" {
 			worldURL = "https://vrchat.com/home/world/" + record.WorldID
 		}
-		if err := addMetadataToImage(record.SourcePath, record.ShootDate, record.WorldName, record.AuthorName, "", worldURL); err != nil {
+		worldIconName := ""
+		if record.WorldFilledFromLog {
+			worldIconName = "lock"
+		}
+		if err := addMetadataToImageWithWorldIcon(record.SourcePath, record.ShootDate, record.WorldName, record.AuthorName, "", worldURL, worldIconName); err != nil {
 			return outputPath, err
 		}
 		return adjustOutputPath(outputPath, determineOutputFormat(record.SourcePath, appConfig.Image.OutputFormat)), nil
@@ -1903,6 +2483,10 @@ func verifyMetadataIntegrity(origData []byte, outputPath string, isWebP bool) (b
 }
 
 func addMetadataToImage(imagePath string, date string, worldName string, authorName string, authorID string, worldURL string) error {
+	return addMetadataToImageWithWorldIcon(imagePath, date, worldName, authorName, authorID, worldURL, "")
+}
+
+func addMetadataToImageWithWorldIcon(imagePath string, date string, worldName string, authorName string, authorID string, worldURL string, worldIconName string) error {
 	// 元のファイルデータを読み込み（メタデータ取得用）
 	origData, err := os.ReadFile(imagePath)
 	if err != nil {
@@ -2149,7 +2733,7 @@ func addMetadataToImage(imagePath string, date string, worldName string, authorN
 	if !isDark {
 		textColor = color.Black
 	}
-	addTextToImage(newImg, date, worldName, authorName, authorID, worldURL, marginTop, newWidth, newHeight, textColor, bgColor, isDark, worldURL != "")
+	addTextToImage(newImg, date, worldName, authorName, authorID, worldURL, marginTop, newWidth, newHeight, textColor, bgColor, isDark, worldURL != "", worldIconName)
 
 	outputDir := getOutputDir(imagePath)
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
@@ -2355,6 +2939,7 @@ func loadSVGIcon(iconName, colorHex string, targetSize int) (image.Image, error)
 		"calendar": "calendar_today_24dp_434343.svg",
 		"camera":   "photo_camera_24dp_434343.svg",
 		"location": "location_pin_24dp_434343.svg",
+		"lock":     "lock_24dp_434343.svg",
 		"person":   "person_24dp_434343.svg",
 		"world":    "public_24dp_434343.svg",
 	}
@@ -2463,7 +3048,7 @@ func createColoredSquare(width, height int, colorHex string) image.Image {
 
 // addTextToImageはマージン部分にテキスト情報を[icon] [date] [icon] [author] [icon] [world] ... [QR]レイアウトで描画
 // SVG＋freetype を使用して、余白内に横一行で配置
-func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worldURL string, marginTop, origWidth, origHeight int, textColor, bgColor color.Color, isDark, needsQR bool) error {
+func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worldURL string, marginTop, origWidth, origHeight int, textColor, bgColor color.Color, isDark, needsQR bool, worldIconName string) error {
 	if marginTop <= 0 {
 		return nil
 	}
@@ -2635,7 +3220,10 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 
 	// ワールド名セクション
 	if worldName != "" && currentX < availableRight {
-		if locIcon, err := loadSVGIcon("location", colorHex, iconSize); err == nil {
+		if worldIconName == "" {
+			worldIconName = "location"
+		}
+		if locIcon, err := loadSVGIcon(worldIconName, colorHex, iconSize); err == nil {
 			iconRect := image.Rect(currentX, iconY, currentX+iconSize, iconY+iconSize)
 			draw.Draw(img, iconRect, locIcon, image.Point{}, draw.Over)
 		}
