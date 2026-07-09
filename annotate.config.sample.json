@@ -36,7 +36,7 @@
     "supportedInputExtensions": [".png", ".webp", ".jpg", ".jpeg"]
   },
   "watcher": {
-    "vrchatPhotoRoot": "C:\\FURUKAWA\\VRChat_pic",
+    "vrchatPhotoRoot": "D:\\VRChat_pic",
     "amazonPhotosOutputDir": "",
     "fileStabilityWaitSeconds": 5,
     "stableCheckIntervalSeconds": 1,
