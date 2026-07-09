@@ -4,7 +4,7 @@ REM This batch runs the current source code with the watch subcommand.
 
 cd /d "%~dp0"
 
-set "WATCH_ROOT=C:\Users\miwam\OneDrive\Pictures\VRChat"
+set "WATCH_ROOT=C:\FURUKAWA\VRChat_pic"
 
 echo ========================================
 echo Start VRChat photo folder watcher
