@@ -129,6 +129,57 @@ func TestBuildPhotoRecordFillsWorldAndUsersFromLogSnapshot(t *testing.T) {
 	}
 }
 
+func TestPhotoTimeWithoutZoneUsesLocalTime(t *testing.T) {
+	tm, ok := parsePhotoTime("2026-07-09T23:59:30")
+	if !ok {
+		t.Fatal("parsePhotoTime did not match local timestamp")
+	}
+	if tm.Location() != time.Local {
+		t.Fatalf("location = %v; want time.Local", tm.Location())
+	}
+	if tm.Format("2006-01-02T15:04:05") != "2026-07-09T23:59:30" {
+		t.Fatalf("time = %s", tm.Format(time.RFC3339))
+	}
+}
+
+func TestBuildPhotoRecordUsesLocalPhotoTimeForSnapshot(t *testing.T) {
+	oldContext := vrchatContext
+	defer func() { vrchatContext = oldContext }()
+
+	before, err := time.ParseInLocation("2006-01-02T15:04:05", "2026-07-09T23:59:00", time.Local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := time.ParseInLocation("2006-01-02T15:04:05", "2026-07-10T00:01:00", time.Local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vrchatContext = &VRChatLogTracker{
+		presentUsers: make(map[string]bool),
+		history: []VRChatContextSnapshot{
+			{
+				At:        before,
+				WorldID:   "wrld_before",
+				WorldName: "Before World",
+			},
+			{
+				At:        after,
+				WorldID:   "wrld_after",
+				WorldName: "After World",
+			},
+		},
+	}
+	path := filepath.Join(t.TempDir(), "VRChat_2026-07-09_23-59-30.000_3840x2160.png")
+	if err := os.WriteFile(path, []byte("not a png"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	record := buildPhotoRecord(path, SourceTypePhoto)
+	if record.WorldID != "wrld_before" || record.WorldName != "Before World" {
+		t.Fatalf("record should use local-time snapshot before photo: %#v", record)
+	}
+}
+
 func TestBuildEagleRequestAddsPresentUserTags(t *testing.T) {
 	oldConfig := appConfig
 	defer func() { appConfig = oldConfig }()

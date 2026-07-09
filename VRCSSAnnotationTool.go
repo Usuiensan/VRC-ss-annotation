@@ -626,19 +626,23 @@ func parsePhotoTime(value string) (time.Time, bool) {
 	if value == "" {
 		return time.Time{}, false
 	}
-	layouts := []string{
+	zonedLayouts := []string{
 		time.RFC3339Nano,
 		time.RFC3339,
 		"2006-01-02T15:04:05.0000000-07:00",
+	}
+	for _, layout := range zonedLayouts {
+		if t, err := time.Parse(layout, value); err == nil {
+			return t, true
+		}
+	}
+	localLayouts := []string{
 		"2006-01-02T15:04:05.0000000",
 		"2006-01-02T15:04:05.000",
 		"2006-01-02T15:04:05",
 		"2006-01-02 15:04:05",
 	}
-	for _, layout := range layouts {
-		if t, err := time.Parse(layout, value); err == nil {
-			return t, true
-		}
+	for _, layout := range localLayouts {
 		if t, err := time.ParseInLocation(layout, value, time.Local); err == nil {
 			return t, true
 		}
