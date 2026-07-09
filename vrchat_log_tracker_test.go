@@ -196,6 +196,54 @@ func TestLogFileChangeEndsPreviousVisitAndClearsSnapshot(t *testing.T) {
 	}
 }
 
+func TestPollReadsOnlyAppendedLogLines(t *testing.T) {
+	logDir := t.TempDir()
+	visitLogDir := t.TempDir()
+	logPath := filepath.Join(logDir, "output_log_2026-07-09_23-58-00.txt")
+	initial := "2026.07.09 23:58:01 Log -  [Behaviour] Joining wrld_tail:12345~friends(usr_owner)\n" +
+		"2026.07.09 23:58:05 Log -  [Behaviour] Entering Room: Tail World\n"
+	if err := os.WriteFile(logPath, []byte(initial), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tracker := &VRChatLogTracker{
+		logDir:       logDir,
+		visitLogDir:  visitLogDir,
+		day:          "2026-07-09",
+		presentUsers: make(map[string]bool),
+	}
+	tracker.poll()
+	firstEvents := readAllVisitEvents(t, visitLogDir)
+	if !containsVisitEvent(firstEvents, "world_join", false) || !containsVisitEvent(firstEvents, "world_name", false) {
+		t.Fatalf("initial events missing: %#v", firstEvents)
+	}
+
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`2026.07.09 23:58:10 Log -  [Behaviour] OnPlayerJoined "Alice" (usr_1)` + "\n"); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	tracker.poll()
+
+	events := readAllVisitEvents(t, visitLogDir)
+	if countVisitEvents(events, "world_join") != 1 {
+		t.Fatalf("world_join should not be reprocessed: %#v", events)
+	}
+	if countVisitEvents(events, "player_join") != 1 {
+		t.Fatalf("appended player_join was not processed once: %#v", events)
+	}
+	snap := tracker.SnapshotAt(time.Now())
+	if !reflect.DeepEqual(snap.PresentUsers, []string{"Alice"}) {
+		t.Fatalf("snapshot users after appended line = %#v", snap.PresentUsers)
+	}
+}
+
 func readVisitEvents(t *testing.T, path string) []VRChatVisitEvent {
 	t.Helper()
 	f, err := os.Open(path)
@@ -242,4 +290,14 @@ func containsVisitEvent(events []VRChatVisitEvent, eventName string, continues b
 		return true
 	}
 	return false
+}
+
+func countVisitEvents(events []VRChatVisitEvent, eventName string) int {
+	count := 0
+	for _, event := range events {
+		if event.Event == eventName {
+			count++
+		}
+	}
+	return count
 }
