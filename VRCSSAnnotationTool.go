@@ -852,6 +852,23 @@ func (t *VRChatLogTracker) handleLogLine(logPath, line string) {
 		t.appendEventWithSnapshot(ts, "world_join", "", logPath, snap)
 		return
 	}
+	if parseLeavingRoom(line) {
+		t.mu.Lock()
+		prevSnap := t.snapshotLocked(ts)
+		prevStartedAt := t.visitStartedAt
+		t.worldID = ""
+		t.worldName = ""
+		t.instanceID = ""
+		t.instanceType = ""
+		t.presentUsers = make(map[string]bool)
+		t.visitStartedAt = time.Time{}
+		t.history = append(t.history, t.snapshotLocked(ts))
+		t.mu.Unlock()
+		if prevSnap.WorldID != "" || prevSnap.InstanceID != "" {
+			t.appendVisitEnd(ts, prevStartedAt, prevSnap, logPath, "world_leave")
+		}
+		return
+	}
 	if worldName, matched := parseEnteringRoom(line); matched {
 		t.mu.Lock()
 		t.worldName = worldName
@@ -916,6 +933,21 @@ func parseEnteringRoom(line string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func parseLeavingRoom(line string) bool {
+	patterns := []string{
+		`(?i)\bLeaving Room\b`,
+		`(?i)\bLeft Room\b`,
+		`(?i)\bOnLeftRoom\b`,
+		`(?i)\bOnLeftWorld\b`,
+	}
+	for _, pattern := range patterns {
+		if regexp.MustCompile(pattern).MatchString(line) {
+			return true
+		}
+	}
+	return false
 }
 
 func parsePlayerJoined(line string) (string, bool) {

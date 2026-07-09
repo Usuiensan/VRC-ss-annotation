@@ -39,6 +39,13 @@ func TestVRChatLogParsers(t *testing.T) {
 	if !ok || userName != "Bob" {
 		t.Fatalf("parsePlayerLeft = %q, %v", userName, ok)
 	}
+
+	if !parseLeavingRoom("2026.07.10 00:03:00 Log -  [Behaviour] Leaving Room") {
+		t.Fatal("parseLeavingRoom did not match Leaving Room")
+	}
+	if !parseLeavingRoom("2026.07.10 00:03:00 Log -  [Behaviour] OnLeftRoom") {
+		t.Fatal("parseLeavingRoom did not match OnLeftRoom")
+	}
 }
 
 func TestVRChatLogTrackerSnapshotAndVisitLogs(t *testing.T) {
@@ -193,6 +200,43 @@ func TestLogFileChangeEndsPreviousVisitAndClearsSnapshot(t *testing.T) {
 	events := readAllVisitEvents(t, visitLogDir)
 	if !containsVisitEvent(events, "log_file_changed", false) {
 		t.Fatalf("events do not contain log_file_changed: %#v", events)
+	}
+}
+
+func TestLeavingRoomEndsVisitAndClearsSnapshot(t *testing.T) {
+	visitLogDir := t.TempDir()
+	tracker := &VRChatLogTracker{
+		visitLogDir:  visitLogDir,
+		day:          "2026-07-09",
+		presentUsers: make(map[string]bool),
+	}
+	logPath := filepath.Join(t.TempDir(), "output_log_2026-07-09.txt")
+
+	tracker.handleLogLine(logPath, "2026.07.09 23:58:01 Log -  [Behaviour] Joining wrld_leave:12345~private(usr_owner)")
+	tracker.handleLogLine(logPath, "2026.07.09 23:58:05 Log -  [Behaviour] Entering Room: Leave World")
+	tracker.handleLogLine(logPath, `2026.07.09 23:58:10 Log -  [Behaviour] OnPlayerJoined "Alice" (usr_1)`)
+	tracker.handleLogLine(logPath, "2026.07.09 23:59:00 Log -  [Behaviour] Leaving Room")
+
+	snap := tracker.SnapshotAt(time.Now())
+	if snap.WorldID != "" || snap.WorldName != "" || len(snap.PresentUsers) != 0 {
+		t.Fatalf("snapshot after leaving room should be empty: %#v", snap)
+	}
+	events := readAllVisitEvents(t, visitLogDir)
+	if countVisitEvents(events, "world_leave") != 1 {
+		t.Fatalf("world_leave event count mismatch: %#v", events)
+	}
+	var leaveEvent VRChatVisitEvent
+	for _, event := range events {
+		if event.Event == "world_leave" {
+			leaveEvent = event
+			break
+		}
+	}
+	if leaveEvent.WorldID != "wrld_leave" || leaveEvent.WorldName != "Leave World" {
+		t.Fatalf("world_leave should keep previous world context: %#v", leaveEvent)
+	}
+	if leaveEvent.VisitEndedAt == "" || leaveEvent.DurationSeconds <= 0 {
+		t.Fatalf("world_leave should include end time and duration: %#v", leaveEvent)
 	}
 }
 
