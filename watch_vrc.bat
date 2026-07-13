@@ -7,6 +7,29 @@ cd /d "%~dp0"
 set "WATCH_ROOT=C:\FURUKAWA\VRChat_pic"
 set "EXE=%~dp0VRCSSAnnotationTool.exe"
 
+echo Updating main branch...
+git fetch origin main
+if errorlevel 1 (
+    echo Failed to fetch origin/main.
+    pause
+    exit /b 1
+)
+
+git merge --ff-only origin/main
+if errorlevel 1 (
+    echo Failed to fast-forward main. Commit or stash local changes, then try again.
+    pause
+    exit /b 1
+)
+
+echo Building VRCSSAnnotationTool.exe...
+go build -ldflags "-s -w" -o "%EXE%" .
+if errorlevel 1 (
+    echo Failed to build VRCSSAnnotationTool.exe.
+    pause
+    exit /b 1
+)
+
 if not exist "%EXE%" (
     echo VRCSSAnnotationTool.exe was not found.
     echo Build it first:
