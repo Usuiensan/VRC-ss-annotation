@@ -20,6 +20,7 @@ type FontConfig struct {
 	MainFont      string   `json:"mainFont"`
 	FallbackFonts []string `json:"fallbackFonts"`
 }
+
 type LayoutConfig struct {
 	MarginTop    int     `json:"marginTop"`
 	MarginLeft   int     `json:"marginLeft"`
@@ -29,12 +30,14 @@ type LayoutConfig struct {
 	GapSize      int     `json:"gapSize"`
 	MainFontSize float64 `json:"mainFontSize"`
 }
+
 type ColorConfig struct {
 	TextColorLight       string `json:"textColorLight"`
 	TextColorDark        string `json:"textColorDark"`
 	BackgroundColorLight string `json:"backgroundColorLight"`
 	BackgroundColorDark  string `json:"backgroundColorDark"`
 }
+
 type ImageConfig struct {
 	DarkThreshold            float64  `json:"darkThreshold"`
 	QRScaleFactor            int      `json:"qrScaleFactor"`
@@ -44,6 +47,7 @@ type ImageConfig struct {
 	OutputFormat             string   `json:"outputFormat"`
 	SupportedInputExtensions []string `json:"supportedInputExtensions"`
 }
+
 type WatcherConfig struct {
 	VRChatPhotoRoot            string `json:"vrchatPhotoRoot"`
 	AmazonPhotosOutputDir      string `json:"amazonPhotosOutputDir"`
@@ -55,15 +59,18 @@ type WatcherConfig struct {
 	ScanIntervalSeconds        int    `json:"scanIntervalSeconds"`
 	LogPollIntervalSeconds     int    `json:"logPollIntervalSeconds"`
 }
+
 type EagleConfig struct {
 	Enabled  *bool    `json:"enabled,omitempty"`
 	BaseURL  string   `json:"baseUrl"`
 	FolderID string   `json:"folderId"`
 	Folders  []string `json:"folders"`
 }
+
 type StateConfig struct {
 	Path string `json:"path"`
 }
+
 type NotificationConfig struct {
 	ToastEnabled *bool `json:"toastEnabled,omitempty"`
 }
@@ -81,6 +88,7 @@ type PhotoRecord struct {
 	OutputPath         string     `json:"output_path,omitempty"`
 	WorldFilledFromLog bool       `json:"world_filled_from_log,omitempty"`
 }
+
 type ProcessStateEntry struct {
 	Timestamp          string     `json:"timestamp"`
 	SourcePath         string     `json:"source_path"`
