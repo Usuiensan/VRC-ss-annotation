@@ -1715,6 +1715,13 @@ func formatEagleInstanceLabel(instanceID, instanceType string) string {
 	return label
 }
 
+func worldIconNameForRecord(record PhotoRecord) string {
+	if strings.TrimSpace(record.WorldName) != "" || strings.TrimSpace(record.WorldID) != "" {
+		return "location"
+	}
+	return "not_listed_location"
+}
+
 func exportToAmazon(record PhotoRecord) (string, error) {
 	outputDir := amazonOutputDir()
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
@@ -1737,10 +1744,7 @@ func exportToAmazon(record PhotoRecord) (string, error) {
 		if record.WorldID != "" {
 			worldURL = "https://vrchat.com/home/world/" + record.WorldID
 		}
-		worldIconName := ""
-		if record.WorldFilledFromLog {
-			worldIconName = "lock"
-		}
+		worldIconName := worldIconNameForRecord(record)
 		if err := addMetadataToImageWithWorldIcon(record.SourcePath, record.ShootDate, record.WorldName, record.AuthorName, "", worldURL, worldIconName); err != nil {
 			return outputPath, err
 		}
@@ -2173,10 +2177,7 @@ func main() {
 				} else {
 					worldURL = fmt.Sprintf("https://vrchat.com/home/world/%s", record.WorldID)
 				}
-				worldIconName := ""
-				if record.WorldFilledFromLog {
-					worldIconName = "lock"
-				}
+				worldIconName := worldIconNameForRecord(record)
 				if err := addMetadataToImageWithWorldIcon(path, record.ShootDate, record.WorldName, record.AuthorName, "", worldURL, worldIconName); err != nil {
 					msg := fmt.Sprintf("画像処理エラー (%s): %v", path, err)
 					fmt.Fprintln(os.Stderr, msg)
@@ -3297,12 +3298,13 @@ func loadSVGIcon(iconName, colorHex string, targetSize int) (image.Image, error)
 	}
 	// ファイル名マッピング
 	fileNameMap := map[string]string{
-		"calendar": "calendar_today_24dp_434343.svg",
-		"camera":   "photo_camera_24dp_434343.svg",
-		"location": "location_pin_24dp_434343.svg",
-		"lock":     "lock_24dp_434343.svg",
-		"person":   "person_24dp_434343.svg",
-		"world":    "public_24dp_434343.svg",
+		"calendar":            "calendar_today_24dp_434343.svg",
+		"camera":              "photo_camera_24dp_434343.svg",
+		"location":            "location_pin_24dp_434343.svg",
+		"lock":                "lock_24dp_434343.svg",
+		"not_listed_location": "not_listed_location_24dp_434343.svg",
+		"person":              "person_24dp_434343.svg",
+		"world":               "public_24dp_434343.svg",
 	}
 
 	svgFileName := fileNameMap[iconName]
@@ -3553,45 +3555,52 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 		currentX += measureWidth(dateFace, dateText) + gapSize
 	}
 
+	drawWorldSection := worldName != "" || worldIconName == "not_listed_location"
+
 	// ワールド情報がある場合のみアイコン＆テキスト描画
-	if worldName != "" && currentX < availableRight {
+	if drawWorldSection && currentX < availableRight {
 		// 撮影者がコンフィグのプレースホルダー名の場合は撮影者セクションを省略
 		skipAuthor := false
 		if strings.TrimSpace(appConfig.PlaceholderAuthorName) != "" {
 			skipAuthor = strings.TrimSpace(authorName) == strings.TrimSpace(appConfig.PlaceholderAuthorName)
 		}
-		if !skipAuthor {
-			// アイコン2: カメラ（作成者）
+		authorText := ""
+		if !skipAuthor && strings.TrimSpace(authorName) != "" {
+			authorText = fitText(mainFace, authorName, availableRight-currentX-iconSize-iconSpacing)
+		}
+		if authorText != "" {
 			if cameraIcon, err := loadSVGIcon("camera", colorHex, iconSize); err == nil {
 				iconRect := image.Rect(currentX, iconY, currentX+iconSize, iconY+iconSize)
 				draw.Draw(img, iconRect, cameraIcon, image.Point{}, draw.Over)
 			}
 			currentX += iconSize + iconSpacing
 
-			// テキスト: 作成者名（可変幅）
-			authorText := fitText(mainFace, authorName, availableRight-currentX)
-			if authorText != "" {
-				c.SetFont(font)
-				pt := freetype.Pt(currentX, textBaseline)
-				c.DrawString(authorText, pt)
-				currentX += measureWidth(mainFace, authorText) + gapSize
-			}
+			c.SetFont(font)
+			pt := freetype.Pt(currentX, textBaseline)
+			c.DrawString(authorText, pt)
+			currentX += measureWidth(mainFace, authorText) + gapSize
 		}
 	}
 
 	// ワールド名セクション
-	if worldName != "" && currentX < availableRight {
+	if drawWorldSection && currentX < availableRight {
 		if worldIconName == "" {
-			worldIconName = "location"
+			worldIconName = "world"
 		}
-		if locIcon, err := loadSVGIcon(worldIconName, colorHex, iconSize); err == nil {
+		worldIcon, err := loadSVGIcon(worldIconName, colorHex, iconSize)
+		if err != nil && worldIconName != "world" {
+			worldIcon, err = loadSVGIcon("world", colorHex, iconSize)
+		}
+		if err != nil && worldIconName != "location" {
+			worldIcon, err = loadSVGIcon("location", colorHex, iconSize)
+		}
+		if err == nil {
 			iconRect := image.Rect(currentX, iconY, currentX+iconSize, iconY+iconSize)
-			draw.Draw(img, iconRect, locIcon, image.Point{}, draw.Over)
+			draw.Draw(img, iconRect, worldIcon, image.Point{}, draw.Over)
 		}
 		currentX += iconSize + iconSpacing
 
-		worldText := fitText(mainFace, worldName, availableRight-currentX)
-		if worldText != "" {
+		if worldText := fitText(mainFace, worldName, availableRight-currentX); worldText != "" {
 			c.SetFont(font)
 			pt := freetype.Pt(currentX, textBaseline)
 			c.DrawString(worldText, pt)
