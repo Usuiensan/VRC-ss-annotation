@@ -444,6 +444,9 @@ func TestOutputFormatHelpers(t *testing.T) {
 	if got := determineOutputFormat("photo.webp", "auto"); got != "webp" {
 		t.Fatalf("auto WebP format = %q", got)
 	}
+	if got := determineOutputFormat("photo.png", "auto"); got != "png" {
+		t.Fatalf("auto PNG format = %q", got)
+	}
 	if got := determineOutputFormat("photo.jpg", "invalid"); got != "png" {
 		t.Fatalf("invalid format fallback = %q", got)
 	}

@@ -29,7 +29,7 @@
     "qrRightPadding": 56,
     "webpCompressionQuality": 90,
     "webpLossless": true,
-    "outputFormat": "webp",
+    "outputFormat": "auto",
     "supportedInputExtensions": [".png", ".webp", ".jpg", ".jpeg"]
   }
 }
