@@ -1,12 +1,13 @@
 package main
 
 import (
-	"bytes"
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -196,14 +197,14 @@ func TestBuildPhotoRecordLoadsContextFromVisitLogs(t *testing.T) {
 	logPath := filepath.Join(visitLogDir, "vrchat-visits-2026-07-10.jsonl")
 	events := []VRChatVisitEvent{
 		{
-			Timestamp:     "2026-07-10T01:00:00+09:00",
-			Event:         "world_join",
-			WorldID:       "wrld_67013904-2013-4dab-9c54-5e68b04f6a05",
-			WorldName:     "ﾁｬﾝﾙｰﾑ",
-			InstanceID:    "32692~friends(usr_owner)",
-			InstanceType:  "friends",
-			PresentUsers:  []string{},
-			VisitStartedAt:"2026-07-10T01:00:00+09:00",
+			Timestamp:      "2026-07-10T01:00:00+09:00",
+			Event:          "world_join",
+			WorldID:        "wrld_67013904-2013-4dab-9c54-5e68b04f6a05",
+			WorldName:      "ﾁｬﾝﾙｰﾑ",
+			InstanceID:     "32692~friends(usr_owner)",
+			InstanceType:   "friends",
+			PresentUsers:   []string{},
+			VisitStartedAt: "2026-07-10T01:00:00+09:00",
 		},
 		{
 			Timestamp:    "2026-07-10T01:05:00+09:00",
@@ -252,13 +253,13 @@ func TestBuildPhotoRecordLoadsContextFromVisitLogs(t *testing.T) {
 	}
 	req := buildEagleRequest(record)
 	wantTags := map[string]bool{
-		"VRChat":                true,
-		"type:photo":            true,
-		"wrld:ﾁｬﾝﾙｰﾑ":            true,
-		"2026-07":               true,
-		"user:うすいえんさん":   true,
-		"user:エフギア":         true,
-		"user:よるつき、":       true,
+		"VRChat":       true,
+		"type:photo":   true,
+		"wrld:ﾁｬﾝﾙｰﾑ":  true,
+		"2026-07":      true,
+		"user:うすいえんさん": true,
+		"user:エフギア":    true,
+		"user:よるつき、":   true,
 	}
 	for _, tag := range req.Tags {
 		delete(wantTags, tag)
@@ -271,6 +272,55 @@ func TestBuildPhotoRecordLoadsContextFromVisitLogs(t *testing.T) {
 	}
 	if req.Annotation != "World: ﾁｬﾝﾙｰﾑ\nInstance: 32692 (Friends)" {
 		t.Fatalf("annotation = %q", req.Annotation)
+	}
+}
+
+func TestBuildPhotoRecordLoadsUsersFromRawOutputLogs(t *testing.T) {
+	oldConfig := appConfig
+	oldContext := vrchatContext
+	defer func() {
+		appConfig = oldConfig
+		vrchatContext = oldContext
+	}()
+
+	appConfig = getDefaultConfig()
+	logDir := t.TempDir()
+	appConfig.Watcher.VRChatLogDir = logDir
+	appConfig.Watcher.VisitLogDir = filepath.Join(t.TempDir(), "missing-visit-logs")
+
+	logPath := filepath.Join(logDir, "output_log_2026-07-10_01-00-00.txt")
+	logText := strings.Join([]string{
+		"2026.07.10 01:00:00 Log -  [Behaviour] Joining wrld_raw:32692~friends(usr_owner)",
+		"2026.07.10 01:00:03 Log -  [Behaviour] Entering Room: Raw Log World",
+		`2026.07.10 01:01:00 Log -  [Behaviour] OnPlayerJoined "Alice" (usr_1)`,
+		`2026.07.10 01:02:00 Log -  [Behaviour] OnPlayerJoined "Bob" (usr_2)`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(logPath, []byte(logText), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(t.TempDir(), "VRChat_2026-07-10_01-03-00.000_3840x2160.png")
+	if err := os.WriteFile(path, []byte("not a png"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	record := buildPhotoRecord(path, SourceTypePhoto)
+	if record.WorldID != "wrld_raw" || record.WorldName != "Raw Log World" {
+		t.Fatalf("record world from raw output logs = %#v", record)
+	}
+	if !reflect.DeepEqual(record.PresentUsers, []string{"Alice", "Bob"}) {
+		t.Fatalf("record users = %#v", record.PresentUsers)
+	}
+	req := buildEagleRequest(record)
+	wantTags := map[string]bool{
+		"user:Alice": true,
+		"user:Bob":   true,
+	}
+	for _, tag := range req.Tags {
+		delete(wantTags, tag)
+	}
+	if len(wantTags) > 0 {
+		t.Fatalf("missing user tags: %#v; got %#v", wantTags, req.Tags)
 	}
 }
 

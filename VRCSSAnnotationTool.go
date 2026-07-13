@@ -740,11 +740,138 @@ func ensureVRChatContext() *VRChatLogTracker {
 	if vrchatContext != nil {
 		return vrchatContext
 	}
-	if tracker := loadVRChatContextFromVisitLogs(); tracker != nil {
+	if tracker := mergeVRChatContexts(loadVRChatContextFromVisitLogs(), loadVRChatContextFromOutputLogs()); tracker != nil {
 		vrchatContext = tracker
 		return vrchatContext
 	}
 	return nil
+}
+
+func mergeVRChatContexts(trackers ...*VRChatLogTracker) *VRChatLogTracker {
+	var merged []VRChatContextSnapshot
+	for _, tracker := range trackers {
+		if tracker == nil {
+			continue
+		}
+		tracker.mu.RLock()
+		merged = append(merged, tracker.history...)
+		tracker.mu.RUnlock()
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	sort.SliceStable(merged, func(i, j int) bool {
+		return merged[i].At.Before(merged[j].At)
+	})
+	return &VRChatLogTracker{
+		visitLogDir:  strings.TrimSpace(appConfig.Watcher.VisitLogDir),
+		presentUsers: make(map[string]bool),
+		history:      merged,
+	}
+}
+
+func loadVRChatContextFromOutputLogs() *VRChatLogTracker {
+	logDir := strings.TrimSpace(appConfig.Watcher.VRChatLogDir)
+	if logDir == "" {
+		logDir = defaultVRChatLogDir()
+	}
+	if logDir == "" {
+		return nil
+	}
+	paths, err := listVRChatLogFiles(logDir)
+	if err != nil || len(paths) == 0 {
+		return nil
+	}
+	tracker := &VRChatLogTracker{
+		logDir:       logDir,
+		visitLogDir:  strings.TrimSpace(appConfig.Watcher.VisitLogDir),
+		presentUsers: make(map[string]bool),
+	}
+	for _, path := range paths {
+		if err := tracker.readLogFileSnapshotOnly(path); err != nil {
+			continue
+		}
+	}
+	if len(tracker.history) == 0 {
+		return nil
+	}
+	sort.SliceStable(tracker.history, func(i, j int) bool {
+		return tracker.history[i].At.Before(tracker.history[j].At)
+	})
+	return tracker
+}
+
+func listVRChatLogFiles(logDir string) ([]string, error) {
+	var paths []string
+	err := filepath.WalkDir(logDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		name := strings.ToLower(d.Name())
+		if strings.HasPrefix(name, "output_log_") && strings.HasSuffix(name, ".txt") {
+			paths = append(paths, path)
+		}
+		return nil
+	})
+	sort.Strings(paths)
+	return paths, err
+}
+
+func (t *VRChatLogTracker) readLogFileSnapshotOnly(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+	for scanner.Scan() {
+		t.handleLogLineSnapshotOnly(scanner.Text())
+	}
+	return scanner.Err()
+}
+
+func (t *VRChatLogTracker) handleLogLineSnapshotOnly(line string) {
+	ts, ok := parseVRChatLogTime(line)
+	if !ok {
+		return
+	}
+	if worldID, instanceID, matched := parseJoiningWorld(line); matched {
+		t.worldID = worldID
+		t.instanceID = instanceID
+		t.instanceType = classifyInstanceType(instanceID)
+		t.worldName = ""
+		t.presentUsers = make(map[string]bool)
+		t.visitStartedAt = ts
+		t.history = append(t.history, t.snapshotLocked(ts))
+		return
+	}
+	if parseLeavingRoom(line) {
+		t.worldID = ""
+		t.worldName = ""
+		t.instanceID = ""
+		t.instanceType = ""
+		t.presentUsers = make(map[string]bool)
+		t.visitStartedAt = time.Time{}
+		t.history = append(t.history, t.snapshotLocked(ts))
+		return
+	}
+	if worldName, matched := parseEnteringRoom(line); matched {
+		t.worldName = worldName
+		t.history = append(t.history, t.snapshotLocked(ts))
+		return
+	}
+	if userName, matched := parsePlayerJoined(line); matched {
+		t.presentUsers[userName] = true
+		t.history = append(t.history, t.snapshotLocked(ts))
+		return
+	}
+	if userName, matched := parsePlayerLeft(line); matched {
+		delete(t.presentUsers, userName)
+		t.history = append(t.history, t.snapshotLocked(ts))
+		return
+	}
 }
 
 func loadVRChatContextFromVisitLogs() *VRChatLogTracker {
@@ -2036,28 +2163,21 @@ func main() {
 		worker := func() {
 			defer wg.Done()
 			for path := range jobs {
-				meta, err := readVRChatExifPNG(path, true, true)
-				if err != nil {
-					msg := fmt.Sprintf("エラー (%s): %v", path, err)
-					fmt.Fprintln(os.Stderr, msg)
-					appendLog(msg)
-					continue
-				}
-				date, _ := meta["shootDate"].(string)
-				worldName, _ := meta["worldName"].(string)
-				worldID, _ := meta["worldID"].(string)
-				authorName, _ := meta["authorName"].(string)
-				authorID, _ := meta["authorID"].(string)
+				record := buildPhotoRecord(path, classifySourceType(path))
 				var worldURL string
-				if worldID == "" {
+				if record.WorldID == "" {
 					msg := fmt.Sprintf("警告 (%s): ワールドIDが見つかりません（日時のみ表示）", path)
 					fmt.Fprintln(os.Stderr, msg)
 					appendLog(msg)
 					worldURL = ""
 				} else {
-					worldURL = fmt.Sprintf("https://vrchat.com/home/world/%s", worldID)
+					worldURL = fmt.Sprintf("https://vrchat.com/home/world/%s", record.WorldID)
 				}
-				if err := addMetadataToImage(path, date, worldName, authorName, authorID, worldURL); err != nil {
+				worldIconName := ""
+				if record.WorldFilledFromLog {
+					worldIconName = "lock"
+				}
+				if err := addMetadataToImageWithWorldIcon(path, record.ShootDate, record.WorldName, record.AuthorName, "", worldURL, worldIconName); err != nil {
 					msg := fmt.Sprintf("画像処理エラー (%s): %v", path, err)
 					fmt.Fprintln(os.Stderr, msg)
 					appendLog(msg)
