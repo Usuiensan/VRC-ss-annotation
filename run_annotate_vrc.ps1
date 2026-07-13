@@ -9,7 +9,7 @@ $dest = 'D:\library\Auto-import\VRC-stamped'
 $exe = Join-Path (Get-Location) 'VRCSSAnnotationTool.exe'
 
 if (-not (Test-Path $exe)) {
-    Write-Error "Executable not found: $exe. Build it (go build -o VRCSSAnnotationTool.exe main.go) and run again."
+    Write-Error "Executable not found: $exe. Build it (go build -ldflags `"-s -w`" -o VRCSSAnnotationTool.exe .) and run again."
     exit 1
 }
 if (-not (Test-Path $src)) {

@@ -110,7 +110,7 @@ go mod graph | head -20
 
 ```powershell
 # 現在のディレクトリでビルド
-go build -o VRCSSAnnotationTool.exe
+go build -o VRCSSAnnotationTool.exe .
 
 # 実行確認
 .\VRCSSAnnotationTool.exe --json pic/VRChat_2026-01-01_00-01-20.301_3840x2160.png
@@ -120,17 +120,37 @@ go build -o VRCSSAnnotationTool.exe
 
 ```powershell
 # 最適化ビルド
-go build -ldflags "-s -w" -o VRCSSAnnotationTool.exe
+go build -ldflags "-s -w" -o VRCSSAnnotationTool.exe .
 
 # ストリップ版ビルド（より小さいサイズ）
-go build -ldflags "-s -w -X main.version=1.0.0" -o VRCSSAnnotationTool.exe
+go build -ldflags "-s -w -X main.version=1.0.0" -o VRCSSAnnotationTool.exe .
 ```
 
 **ビルド結果**:
 
 ```
-VRCSSAnnotationTool.exe  (13MB 程度)
+VRCSSAnnotationTool.exe  (10MB 程度、`-ldflags "-s -w"` 使用時)
 ```
+
+---
+
+## 👀 Watch / Eagle 再処理
+
+VRChat のスクリーンショットフォルダを監視し、Eagle 登録と Amazon Photos 用出力を行う場合:
+
+```powershell
+.\VRCSSAnnotationTool.exe watch --root "C:\FURUKAWA\VRChat_pic"
+```
+
+VRChat の `output_log_*.txt` は、既定で `%USERPROFILE%\AppData\LocalLow\VRChat\VRChat` から読みます。`annotate.config.json` の `watcher.vrchatLogDir` を指定すると別ディレクトリを使えます。撮影時刻に対応するログ上のワールド情報が取れた場合は、画像内メタデータよりログ復元結果を優先します。
+
+既存の `watch-state.jsonl` に記録済みの画像を、現在のログ復元ルールで再処理する場合:
+
+```powershell
+.\VRCSSAnnotationTool.exe reprocess-state
+```
+
+`reprocess-state` は `watch-state.jsonl` を直接書き換えず、新しい処理結果を末尾に追記します。Eagle 側には再度 `item/add` を送るため、既に登録済みの画像は Eagle 側の重複扱いを確認してください。
 
 ---
 

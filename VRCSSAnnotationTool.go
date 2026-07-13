@@ -544,6 +544,8 @@ func runSubcommand(args []string) (bool, error) {
 		return true, enc.Encode(appConfig)
 	case "retry-failed":
 		return true, retryFailed()
+	case "reprocess-state":
+		return true, reprocessState()
 	default:
 		return false, nil
 	}
@@ -590,21 +592,21 @@ func buildPhotoRecord(path string, sourceType SourceType) PhotoRecord {
 	}
 	if ctx := ensureVRChatContext(); ctx != nil {
 		snap := ctx.SnapshotAt(photoTimeForRecord(record, path))
-		if record.WorldID == "" && snap.WorldID != "" {
+		if snap.WorldID != "" {
 			record.WorldID = snap.WorldID
 			record.WorldFilledFromLog = true
 		}
-		if record.WorldName == "" && snap.WorldName != "" {
+		if snap.WorldName != "" {
 			record.WorldName = snap.WorldName
 			record.WorldFilledFromLog = true
 		}
-		if record.InstanceID == "" {
+		if snap.InstanceID != "" {
 			record.InstanceID = snap.InstanceID
 		}
-		if record.InstanceType == "" {
+		if snap.InstanceType != "" {
 			record.InstanceType = snap.InstanceType
 		}
-		if len(record.PresentUsers) == 0 {
+		if len(snap.PresentUsers) > 0 {
 			record.PresentUsers = snap.PresentUsers
 		}
 	}
@@ -1744,6 +1746,42 @@ func retryFailed() error {
 		}
 	}
 	fmt.Printf("失敗エントリを %d 件再試行しました\n", count)
+	return nil
+}
+
+func reprocessState() error {
+	entries, err := readStateEntries()
+	if err != nil {
+		return err
+	}
+	latestByPath := make(map[string]ProcessStateEntry)
+	var order []string
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.SourcePath) == "" {
+			continue
+		}
+		absPath, err := filepath.Abs(entry.SourcePath)
+		if err != nil {
+			absPath = entry.SourcePath
+		}
+		if _, seen := latestByPath[absPath]; !seen {
+			order = append(order, absPath)
+		}
+		entry.SourcePath = absPath
+		latestByPath[absPath] = entry
+	}
+	count := 0
+	missing := 0
+	for _, path := range order {
+		entry := latestByPath[path]
+		if _, err := os.Stat(entry.SourcePath); err != nil {
+			missing++
+			continue
+		}
+		processWatchedFile(entry.SourcePath, true)
+		count++
+	}
+	fmt.Printf("watch-state.jsonl から %d 件を再処理しました（見つからないファイル %d 件）\n", count, missing)
 	return nil
 }
 
