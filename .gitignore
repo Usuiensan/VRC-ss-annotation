@@ -4,6 +4,11 @@ pic/
 # ビルド生成物
 main.exe
 main
+vrc-exif-tool.exe
 
 # アノテーション出力
 annotated/
+
+# 監視・訪問ログ
+watch-state.jsonl
+visit-logs/
