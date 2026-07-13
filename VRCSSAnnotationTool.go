@@ -588,8 +588,8 @@ func buildPhotoRecord(path string, sourceType SourceType) PhotoRecord {
 	if record.ShootDate == "" {
 		record.ShootDate = extractDateFromFilename(path)
 	}
-	if vrchatContext != nil {
-		snap := vrchatContext.SnapshotAt(photoTimeForRecord(record, path))
+	if ctx := ensureVRChatContext(); ctx != nil {
+		snap := ctx.SnapshotAt(photoTimeForRecord(record, path))
 		if record.WorldID == "" && snap.WorldID != "" {
 			record.WorldID = snap.WorldID
 			record.WorldFilledFromLog = true
@@ -694,6 +694,11 @@ type VRChatLogTracker struct {
 	visitStartedAt time.Time
 }
 
+type visitLogEventRecord struct {
+	VRChatVisitEvent
+	sourcePath string
+}
+
 func startVRChatLogTracker() *VRChatLogTracker {
 	logDir := strings.TrimSpace(appConfig.Watcher.VRChatLogDir)
 	if logDir == "" {
@@ -727,6 +732,149 @@ func startVRChatLogTracker() *VRChatLogTracker {
 	}
 	go tracker.Run()
 	return tracker
+}
+
+func ensureVRChatContext() *VRChatLogTracker {
+	if vrchatContext != nil {
+		return vrchatContext
+	}
+	if tracker := loadVRChatContextFromVisitLogs(); tracker != nil {
+		vrchatContext = tracker
+		return vrchatContext
+	}
+	return nil
+}
+
+func loadVRChatContextFromVisitLogs() *VRChatLogTracker {
+	visitLogDir := strings.TrimSpace(appConfig.Watcher.VisitLogDir)
+	if visitLogDir == "" {
+		visitLogDir = "visit-logs"
+	}
+	info, err := os.Stat(visitLogDir)
+	if err != nil || !info.IsDir() {
+		return nil
+	}
+	entries, err := os.ReadDir(visitLogDir)
+	if err != nil {
+		return nil
+	}
+	var records []visitLogEventRecord
+	for _, entry := range entries {
+		name := strings.ToLower(entry.Name())
+		if entry.IsDir() || !strings.HasPrefix(name, "vrchat-visits-") || !strings.HasSuffix(name, ".jsonl") {
+			continue
+		}
+		path := filepath.Join(visitLogDir, entry.Name())
+		fileRecords, err := readVisitLogEvents(path)
+		if err != nil {
+			continue
+		}
+		records = append(records, fileRecords...)
+	}
+	if len(records) == 0 {
+		return nil
+	}
+	sort.SliceStable(records, func(i, j int) bool {
+		if records[i].VRChatVisitEvent.Timestamp == records[j].VRChatVisitEvent.Timestamp {
+			return records[i].sourcePath < records[j].sourcePath
+		}
+		return records[i].VRChatVisitEvent.Timestamp < records[j].VRChatVisitEvent.Timestamp
+	})
+	tracker := &VRChatLogTracker{
+		visitLogDir:  visitLogDir,
+		presentUsers: make(map[string]bool),
+	}
+	for _, rec := range records {
+		at, err := time.Parse(time.RFC3339, rec.Timestamp)
+		if err != nil {
+			continue
+		}
+		tracker.applyVisitEvent(at, rec.VRChatVisitEvent)
+	}
+	if len(tracker.history) == 0 {
+		return nil
+	}
+	return tracker
+}
+
+func readVisitLogEvents(path string) ([]visitLogEventRecord, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var out []visitLogEventRecord
+	dec := json.NewDecoder(f)
+	for {
+		var entry VRChatVisitEvent
+		if err := dec.Decode(&entry); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return out, err
+		}
+		out = append(out, visitLogEventRecord{VRChatVisitEvent: entry, sourcePath: path})
+	}
+	return out, nil
+}
+
+func (t *VRChatLogTracker) applyVisitEvent(at time.Time, event VRChatVisitEvent) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	switch event.Event {
+	case "world_join", "world_name", "player_join", "player_left", "day_rollover_start", "day_rollover_end", "log_file_changed":
+		if event.WorldID != "" {
+			t.worldID = event.WorldID
+		} else if event.Event == "world_join" || event.Event == "log_file_changed" {
+			t.worldID = ""
+		}
+		if event.WorldName != "" {
+			t.worldName = event.WorldName
+		} else if event.Event == "world_join" || event.Event == "log_file_changed" {
+			t.worldName = ""
+		}
+		if event.InstanceID != "" {
+			t.instanceID = event.InstanceID
+		} else if event.Event == "world_join" || event.Event == "log_file_changed" {
+			t.instanceID = ""
+		}
+		if event.InstanceType != "" {
+			t.instanceType = event.InstanceType
+		} else if event.Event == "world_join" || event.Event == "log_file_changed" {
+			t.instanceType = ""
+		}
+		if event.Event == "world_join" || event.Event == "log_file_changed" || event.Event == "day_rollover_start" {
+			t.presentUsers = make(map[string]bool)
+		}
+		for _, user := range event.PresentUsers {
+			if strings.TrimSpace(user) != "" {
+				t.presentUsers[strings.TrimSpace(user)] = true
+			}
+		}
+		if event.Event == "player_join" && event.UserName != "" {
+			t.presentUsers[event.UserName] = true
+		}
+		if event.Event == "player_left" && event.UserName != "" {
+			delete(t.presentUsers, event.UserName)
+		}
+		t.day = at.Format("2006-01-02")
+		t.history = append(t.history, t.snapshotLocked(at))
+		if event.VisitStartedAt != "" {
+			if startedAt, err := time.Parse(time.RFC3339, event.VisitStartedAt); err == nil {
+				t.visitStartedAt = startedAt
+			}
+		}
+		if event.Event == "world_leave" || event.Event == "day_rollover_end" || event.Event == "log_file_changed" {
+			t.worldID = ""
+			t.worldName = ""
+			t.instanceID = ""
+			t.instanceType = ""
+			t.presentUsers = make(map[string]bool)
+			t.visitStartedAt = time.Time{}
+		}
+	default:
+		return
+	}
 }
 
 func defaultVRChatLogDir() string {
@@ -1415,15 +1563,27 @@ func buildEagleRequest(record PhotoRecord) eagleAddRequest {
 			lines = append(lines, "World: "+record.WorldName)
 		}
 		if record.InstanceID != "" {
-			instance := record.InstanceID
-			if record.InstanceType != "" {
-				instance += "(" + record.InstanceType + ")"
-			}
-			lines = append(lines, "Instance: "+instance)
+			lines = append(lines, "Instance: "+formatEagleInstanceLabel(record.InstanceID, record.InstanceType))
 		}
 		req.Annotation = strings.Join(lines, "\n")
 	}
 	return req
+}
+
+func formatEagleInstanceLabel(instanceID, instanceType string) string {
+	label := instanceID
+	if idx := strings.Index(instanceID, "~"); idx > 0 {
+		label = instanceID[:idx]
+	}
+	typeLabel := strings.TrimSpace(instanceType)
+	if typeLabel != "" {
+		typeLabel = strings.ToUpper(typeLabel[:1]) + typeLabel[1:]
+		if label != "" {
+			return label + " (" + typeLabel + ")"
+		}
+		return typeLabel
+	}
+	return label
 }
 
 func exportToAmazon(record PhotoRecord) (string, error) {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"bufio"
 	"encoding/json"
 	"os"
@@ -177,6 +178,99 @@ func TestBuildPhotoRecordUsesLocalPhotoTimeForSnapshot(t *testing.T) {
 	record := buildPhotoRecord(path, SourceTypePhoto)
 	if record.WorldID != "wrld_before" || record.WorldName != "Before World" {
 		t.Fatalf("record should use local-time snapshot before photo: %#v", record)
+	}
+}
+
+func TestBuildPhotoRecordLoadsContextFromVisitLogs(t *testing.T) {
+	oldConfig := appConfig
+	oldContext := vrchatContext
+	defer func() {
+		appConfig = oldConfig
+		vrchatContext = oldContext
+	}()
+
+	appConfig = getDefaultConfig()
+	visitLogDir := t.TempDir()
+	appConfig.Watcher.VisitLogDir = visitLogDir
+
+	logPath := filepath.Join(visitLogDir, "vrchat-visits-2026-07-10.jsonl")
+	events := []VRChatVisitEvent{
+		{
+			Timestamp:     "2026-07-10T01:00:00+09:00",
+			Event:         "world_join",
+			WorldID:       "wrld_67013904-2013-4dab-9c54-5e68b04f6a05",
+			WorldName:     "ﾁｬﾝﾙｰﾑ",
+			InstanceID:    "32692~friends(usr_owner)",
+			InstanceType:  "friends",
+			PresentUsers:  []string{},
+			VisitStartedAt:"2026-07-10T01:00:00+09:00",
+		},
+		{
+			Timestamp:    "2026-07-10T01:05:00+09:00",
+			Event:        "player_join",
+			UserName:     "うすいえんさん",
+			PresentUsers: []string{"うすいえんさん"},
+		},
+		{
+			Timestamp:    "2026-07-10T01:06:00+09:00",
+			Event:        "player_join",
+			UserName:     "エフギア",
+			PresentUsers: []string{"うすいえんさん", "エフギア"},
+		},
+		{
+			Timestamp:    "2026-07-10T01:07:00+09:00",
+			Event:        "player_join",
+			UserName:     "よるつき、",
+			PresentUsers: []string{"うすいえんさん", "エフギア", "よるつき、"},
+		},
+	}
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	for _, ev := range events {
+		if err := enc.Encode(ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(logPath, b.Bytes(), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(t.TempDir(), "VRChat_2026-07-10_01-08-46.000_3840x2160.png")
+	if err := os.WriteFile(path, []byte("not a png"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	record := buildPhotoRecord(path, SourceTypePhoto)
+	if record.WorldID != "wrld_67013904-2013-4dab-9c54-5e68b04f6a05" || record.WorldName != "ﾁｬﾝﾙｰﾑ" {
+		t.Fatalf("record world from visit logs = %#v", record)
+	}
+	if !record.WorldFilledFromLog {
+		t.Fatal("WorldFilledFromLog should be true")
+	}
+	if !reflect.DeepEqual(record.PresentUsers, []string{"うすいえんさん", "よるつき、", "エフギア"}) {
+		t.Fatalf("record users = %#v", record.PresentUsers)
+	}
+	req := buildEagleRequest(record)
+	wantTags := map[string]bool{
+		"VRChat":                true,
+		"type:photo":            true,
+		"wrld:ﾁｬﾝﾙｰﾑ":            true,
+		"2026-07":               true,
+		"user:うすいえんさん":   true,
+		"user:エフギア":         true,
+		"user:よるつき、":       true,
+	}
+	for _, tag := range req.Tags {
+		delete(wantTags, tag)
+	}
+	if len(wantTags) > 0 {
+		t.Fatalf("missing tags: %#v; got %#v", wantTags, req.Tags)
+	}
+	if req.Website != "https://vrchat.com/home/world/wrld_67013904-2013-4dab-9c54-5e68b04f6a05" {
+		t.Fatalf("website = %q", req.Website)
+	}
+	if req.Annotation != "World: ﾁｬﾝﾙｰﾑ\nInstance: 32692 (Friends)" {
+		t.Fatalf("annotation = %q", req.Annotation)
 	}
 }
 
