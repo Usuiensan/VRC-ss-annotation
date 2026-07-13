@@ -8,6 +8,17 @@ set "WATCH_ROOT=C:\FURUKAWA\VRChat_pic"
 set "EXE=%~dp0VRCSSAnnotationTool.exe"
 
 echo Updating main branch...
+git diff --quiet -- VRCSSAnnotationTool.exe
+if errorlevel 1 (
+    echo Resetting locally built VRCSSAnnotationTool.exe before update...
+    git checkout -- VRCSSAnnotationTool.exe
+    if errorlevel 1 (
+        echo Failed to reset VRCSSAnnotationTool.exe.
+        pause
+        exit /b 1
+    )
+)
+
 git fetch origin main
 if errorlevel 1 (
     echo Failed to fetch origin/main.
