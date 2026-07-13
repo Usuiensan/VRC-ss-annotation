@@ -11,6 +11,21 @@ import (
 	"time"
 )
 
+func normalizeEagleUserName(value string) string {
+	value = strings.TrimSpace(value)
+	lower := strings.ToLower(value)
+	if idx := strings.LastIndex(lower, "player="); idx >= 0 {
+		value = value[idx+len("player="):]
+	}
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, `"'`)
+	if idx := strings.Index(value, " ("); idx >= 0 {
+		value = value[:idx]
+	}
+	value = strings.Trim(value, `"'`)
+	return strings.TrimSpace(strings.Trim(value, "/"))
+}
+
 type eagleAddRequest struct {
 	Path       string   `json:"path"`
 	Name       string   `json:"name"`
@@ -60,9 +75,15 @@ func buildEagleRequest(record PhotoRecord) eagleAddRequest {
 		tags = append(tags, ym)
 	}
 	if record.SourceType == SourceTypePhoto {
+		seenUsers := make(map[string]struct{})
 		for _, user := range record.PresentUsers {
-			if strings.TrimSpace(user) != "" {
-				tags = append(tags, "user:"+strings.TrimSpace(user))
+			name := normalizeEagleUserName(user)
+			if name != "" {
+				if _, seen := seenUsers[name]; seen {
+					continue
+				}
+				seenUsers[name] = struct{}{}
+				tags = append(tags, "user:"+name)
 			}
 		}
 	}

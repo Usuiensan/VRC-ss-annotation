@@ -359,6 +359,35 @@ func TestBuildEagleRequestAddsPresentUserTags(t *testing.T) {
 	}
 }
 
+func TestBuildEagleRequestNormalizesAndDeduplicatesUserTags(t *testing.T) {
+	oldConfig := appConfig
+	defer func() { appConfig = oldConfig }()
+	appConfig = getDefaultConfig()
+	req := buildEagleRequest(PhotoRecord{
+		SourcePath:   "photo.png",
+		SourceType:   SourceTypePhoto,
+		PresentUsers: []string{"user:/ player=うすいえんさん(local)", "うすいえんさん", "/ player=よるみや", "user:/ player=エフギア"},
+	})
+	want := []string{"user:うすいえんさん", "user:よるみや", "user:エフギア"}
+	for _, tag := range want {
+		found := false
+		for _, got := range req.Tags {
+			if got == tag {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("missing normalized tag %q in %#v", tag, req.Tags)
+		}
+	}
+	for _, got := range req.Tags {
+		if strings.Contains(got, "player=") || strings.Contains(got, "/") {
+			t.Errorf("raw player prefix leaked into tag %q", got)
+		}
+	}
+}
+
 func TestProcessStateForRecordPreservesRecordContext(t *testing.T) {
 	record := PhotoRecord{
 		SourcePath:         filepath.Join(t.TempDir(), "photo.png"),

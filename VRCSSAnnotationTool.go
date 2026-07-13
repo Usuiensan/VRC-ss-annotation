@@ -277,18 +277,38 @@ func appendLog(message string) {
 	}
 }
 
-// loadFontFromPaths は複数のパスからフォントを読み込み、最初に見つかったものを返す
-func loadFontFromPaths(paths []string) []byte {
-	for _, p := range paths {
-		if p == "" {
+func loadTrueTypeFont(paths []string) (*truetype.Font, error) {
+	var lastErr error
+	for _, path := range paths {
+		if path == "" {
 			continue
 		}
-		data, err := os.ReadFile(p)
-		if err == nil {
-			return data
+		data, err := os.ReadFile(path)
+		if err != nil {
+			lastErr = err
+			continue
 		}
+		font, err := truetype.Parse(data)
+		if err == nil {
+			return font, nil
+		}
+		lastErr = err
 	}
-	return nil
+	if lastErr == nil {
+		lastErr = errors.New("font not found")
+	}
+	return nil, lastErr
+}
+
+func defaultFontPaths() []string {
+	return []string{
+		`C:\Windows\Fonts\meiryo.ttc`,
+		`C:\Windows\Fonts\msgothic.ttc`,
+		`C:\Windows\Fonts\YuGothM.ttc`,
+		`C:\Windows\Fonts\NotoSansCJK-Regular.ttc`,
+		`/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc`,
+		`/usr/share/fonts/truetype/noto/NotoSansJP-Regular.ttf`,
+	}
 }
 
 // 指定解像度(2048x1440)か判定
@@ -2638,22 +2658,13 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 	colorHex := fmt.Sprintf("%02X%02X%02X", r>>8, g>>8, b>>8)
 
 	// フォント読み込み（日時表示用 - モノスペース）
-	monoFontData := loadFontFromPaths([]string{appConfig.Fonts.MonoFont})
-	var monoFont *truetype.Font
-	if monoFontData != nil {
-		monoFont, _ = truetype.Parse(monoFontData)
-	}
+	monoPaths := append([]string{appConfig.Fonts.MonoFont}, defaultFontPaths()...)
+	monoFont, _ := loadTrueTypeFont(monoPaths)
 
 	// 標準フォント読み込み
-	fontData := loadFontFromPaths([]string{appConfig.Fonts.MainFont})
-	if fontData == nil {
-		// フォントが見つからない場合はフォールバック
-		fontData = loadFontFromPaths(appConfig.Fonts.FallbackFonts)
-	}
-	if fontData == nil {
-		return nil
-	}
-	font, err := truetype.Parse(fontData)
+	fontPaths := append([]string{appConfig.Fonts.MainFont}, appConfig.Fonts.FallbackFonts...)
+	fontPaths = append(fontPaths, defaultFontPaths()...)
+	font, err := loadTrueTypeFont(fontPaths)
 	if err != nil {
 		return nil
 	}
