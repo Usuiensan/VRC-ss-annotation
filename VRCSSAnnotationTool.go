@@ -1408,7 +1408,10 @@ func addRMQROnlyCopy(sourcePath, outputPath, worldURL string) error {
 	if encodeErr != nil {
 		return encodeErr
 	}
-	return closeErr
+	if closeErr != nil {
+		return closeErr
+	}
+	return verifyOutputFormat(outputPath, strings.TrimPrefix(strings.ToLower(filepath.Ext(outputPath)), "."))
 }
 
 func amazonOutputDir() string {
@@ -2343,6 +2346,9 @@ func addMetadataToImageWithWorldIconAndOutputDir(imagePath string, date string, 
 			}
 
 			// メタデータ検証は暫定的に無効化（保存確認待ち）
+			if err := verifyOutputFormat(outputPath, outputFormat); err != nil {
+				return err
+			}
 			return nil
 		} else {
 			if strings.HasSuffix(strings.ToLower(outputPath), ".webp") {
@@ -2482,6 +2488,9 @@ func addMetadataToImageWithWorldIconAndOutputDir(imagePath string, date string, 
 		}
 
 		// メタデータ検証は暫定的に無効化（保存確認待ち）
+		if err := verifyOutputFormat(outputPath, outputFormat); err != nil {
+			return err
+		}
 		return nil
 	} else {
 		if strings.HasSuffix(strings.ToLower(outputPath), ".webp") {

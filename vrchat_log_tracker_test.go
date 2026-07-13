@@ -456,6 +456,16 @@ func TestOutputFormatHelpers(t *testing.T) {
 	if got := adjustOutputPath("photo.JPG", "webp"); got != "photo.webp" {
 		t.Fatalf("adjusted output path = %q", got)
 	}
+	pngPath := filepath.Join(t.TempDir(), "photo.png")
+	if err := os.WriteFile(pngPath, []byte{137, 80, 78, 71, 13, 10, 26, 10}, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyOutputFormat(pngPath, "png"); err != nil {
+		t.Fatalf("PNG format verification failed: %v", err)
+	}
+	if err := verifyOutputFormat(pngPath, "webp"); err == nil {
+		t.Fatal("mismatched output format was accepted")
+	}
 }
 
 func TestClassifySourceType(t *testing.T) {
