@@ -1,10 +1,19 @@
 @echo off
 REM VRChat photo folder watcher launcher.
-REM This batch runs the current source code with the watch subcommand.
+REM This batch runs the compiled binary with the watch subcommand.
 
 cd /d "%~dp0"
 
 set "WATCH_ROOT=C:\FURUKAWA\VRChat_pic"
+set "EXE=%~dp0VRCSSAnnotationTool.exe"
+
+if not exist "%EXE%" (
+    echo VRCSSAnnotationTool.exe was not found.
+    echo Build it first:
+    echo go build -ldflags "-s -w" -o VRCSSAnnotationTool.exe .
+    pause
+    exit /b 1
+)
 
 echo ========================================
 echo Start VRChat photo folder watcher
@@ -13,7 +22,7 @@ echo Press Ctrl+C to stop
 echo ========================================
 echo.
 
-go run . watch --root "%WATCH_ROOT%"
+"%EXE%" watch --root "%WATCH_ROOT%"
 
 echo.
 echo Watcher stopped.
