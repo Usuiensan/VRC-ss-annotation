@@ -17,9 +17,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
-	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -31,7 +29,6 @@ import (
 	"github.com/chai2010/webp"
 	"github.com/golang/freetype"
 	"github.com/golang/freetype/truetype"
-	"github.com/shogo82148/qrcode/rmqr"
 	"github.com/srwiley/oksvg"
 	"github.com/srwiley/rasterx"
 	xdraw "golang.org/x/image/draw"
@@ -40,89 +37,12 @@ import (
 )
 
 var logMutex sync.Mutex
-var stateMutex sync.Mutex
-var configMutex sync.Mutex
 var vrchatContext *VRChatLogTracker
 
 // グローバルコンフィグ構造体
 var appConfig *Config
 
 // Config はアプリケーション全体の設定を保持する構造体
-type Config struct {
-	PlaceholderAuthorName string             `json:"placeholderAuthorName"`
-	OutputDir             string             `json:"outputDir"`
-	DateFormat            string             `json:"dateFormat"`
-	Fonts                 FontConfig         `json:"fonts"`
-	IconPath              string             `json:"iconPath"`
-	Layout                LayoutConfig       `json:"layout"`
-	Colors                ColorConfig        `json:"colors"`
-	Image                 ImageConfig        `json:"image"`
-	Watcher               WatcherConfig      `json:"watcher"`
-	Eagle                 EagleConfig        `json:"eagle"`
-	State                 StateConfig        `json:"state"`
-	Notifications         NotificationConfig `json:"notifications"`
-}
-
-type FontConfig struct {
-	MonoFont      string   `json:"monoFont"`
-	MainFont      string   `json:"mainFont"`
-	FallbackFonts []string `json:"fallbackFonts"`
-}
-
-type LayoutConfig struct {
-	MarginTop    int     `json:"marginTop"`
-	MarginLeft   int     `json:"marginLeft"`
-	MarginRight  int     `json:"marginRight"`
-	IconSize     int     `json:"iconSize"`
-	IconSpacing  int     `json:"iconSpacing"`
-	GapSize      int     `json:"gapSize"`
-	MainFontSize float64 `json:"mainFontSize"`
-}
-
-type ColorConfig struct {
-	TextColorLight       string `json:"textColorLight"`
-	TextColorDark        string `json:"textColorDark"`
-	BackgroundColorLight string `json:"backgroundColorLight"`
-	BackgroundColorDark  string `json:"backgroundColorDark"`
-}
-
-type ImageConfig struct {
-	DarkThreshold            float64  `json:"darkThreshold"`
-	QRScaleFactor            int      `json:"qrScaleFactor"`
-	QRRightPadding           int      `json:"qrRightPadding"`
-	WebPCompressionQuality   int      `json:"webpCompressionQuality"`
-	WebPLossless             bool     `json:"webpLossless"`
-	OutputFormat             string   `json:"outputFormat"`
-	SupportedInputExtensions []string `json:"supportedInputExtensions"`
-}
-
-type WatcherConfig struct {
-	VRChatPhotoRoot            string `json:"vrchatPhotoRoot"`
-	AmazonPhotosOutputDir      string `json:"amazonPhotosOutputDir"`
-	VRChatLogDir               string `json:"vrchatLogDir"`
-	VisitLogDir                string `json:"visitLogDir"`
-	FileStabilityWaitSeconds   int    `json:"fileStabilityWaitSeconds"`
-	StableCheckIntervalSeconds int    `json:"stableCheckIntervalSeconds"`
-	StableCheckCount           int    `json:"stableCheckCount"`
-	ScanIntervalSeconds        int    `json:"scanIntervalSeconds"`
-	LogPollIntervalSeconds     int    `json:"logPollIntervalSeconds"`
-}
-
-type EagleConfig struct {
-	Enabled  *bool    `json:"enabled,omitempty"`
-	BaseURL  string   `json:"baseUrl"`
-	FolderID string   `json:"folderId"`
-	Folders  []string `json:"folders"`
-}
-
-type StateConfig struct {
-	Path string `json:"path"`
-}
-
-type NotificationConfig struct {
-	ToastEnabled *bool `json:"toastEnabled,omitempty"`
-}
-
 // デフォルト設定を返す
 func getDefaultConfig() *Config {
 	defaultEagleEnabled := true
@@ -357,91 +277,44 @@ func appendLog(message string) {
 	}
 }
 
-// loadFontFromPaths は複数のパスからフォントを読み込み、最初に見つかったものを返す
-func loadFontFromPaths(paths []string) []byte {
-	for _, p := range paths {
-		if p == "" {
+func loadTrueTypeFont(paths []string) (*truetype.Font, error) {
+	var lastErr error
+	for _, path := range paths {
+		if path == "" {
 			continue
 		}
-		data, err := os.ReadFile(p)
-		if err == nil {
-			return data
+		data, err := os.ReadFile(path)
+		if err != nil {
+			lastErr = err
+			continue
 		}
+		font, err := truetype.Parse(data)
+		if err == nil {
+			return font, nil
+		}
+		lastErr = err
 	}
-	return nil
+	if lastErr == nil {
+		lastErr = errors.New("font not found")
+	}
+	return nil, lastErr
+}
+
+func defaultFontPaths() []string {
+	return []string{
+		`C:\Windows\Fonts\meiryo.ttc`,
+		`C:\Windows\Fonts\msgothic.ttc`,
+		`C:\Windows\Fonts\YuGothM.ttc`,
+		`C:\Windows\Fonts\NotoSansCJK-Regular.ttc`,
+		`/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc`,
+		`/usr/share/fonts/truetype/noto/NotoSansJP-Regular.ttf`,
+	}
 }
 
 // 指定解像度(2048x1440)か判定
 func isPrintCameraResolutionOnly(img image.Image) bool {
 	bounds := img.Bounds()
 	return bounds.Dx() == 2048 && bounds.Dy() == 1440
-}
-
-// determineOutputFormat は出力フォーマットを決定する
-// outputFormat が "auto" の場合は入力ファイルの拡張子から判定、
-// "png" または "webp" の場合はそれを使用する
-func determineOutputFormat(inputPath string, configFormat string) string {
-	if configFormat == "" || configFormat == "auto" {
-		// 入力ファイルの拡張子から判定
-		if strings.HasSuffix(strings.ToLower(inputPath), ".webp") {
-			return "webp"
-		}
-		return "png" // デフォルトは PNG
-	}
-	// コンフィグで指定されたフォーマットを使用
-	format := strings.ToLower(configFormat)
-	if format == "webp" || format == "png" {
-		return format
-	}
-	return "png" // 無効な値の場合は PNG
-}
-
-// isSupportedInputFile は入力ファイルが対応拡張子か判定する
-func isSupportedInputFile(filePath string, supportedExts []string) bool {
-	if len(supportedExts) == 0 {
-		// デフォルト対応拡張子
-		supportedExts = []string{".png", ".webp", ".jpg", ".jpeg"}
-	}
-	ext := strings.ToLower(filepath.Ext(filePath))
-	for _, supported := range supportedExts {
-		if ext == strings.ToLower(supported) {
-			return true
-		}
-	}
-	return false
-}
-
-// adjustOutputPath は出力フォーマットに応じてファイルパスの拡張子を調整する
-// 例: "image.png" + "webp" → "image.webp"
-func adjustOutputPath(outputPath string, outputFormat string) string {
-	if outputFormat == "" || outputFormat == "auto" {
-		return outputPath
-	}
-
-	format := strings.ToLower(outputFormat)
-	var newExt string
-
-	if format == "webp" {
-		newExt = ".webp"
-	} else if format == "png" {
-		newExt = ".png"
-	} else {
-		return outputPath // 無効なフォーマットの場合は変更しない
-	}
-
-	// 現在の拡張子を取得（元のケースのまま）
-	oldExt := filepath.Ext(outputPath)
-
-	// 既に正しい拡張子の場合は変更しない（大文字小文字を区別しない比較）
-	if strings.ToLower(oldExt) == newExt {
-		return outputPath
-	}
-
-	// 拡張子を置換
-	if oldExt != "" {
-		return outputPath[:len(outputPath)-len(oldExt)] + newExt
-	}
-	return outputPath + newExt
 }
 
 // 出力ディレクトリパスを取得（outputDirBaseが空の場合は画像と同じディレクトリ内の"annotated"を使用）
@@ -452,130 +325,15 @@ func getOutputDir(imagePath string) string {
 	return filepath.Join(filepath.Dir(imagePath), "annotated")
 }
 
-type SourceType string
-
-const (
-	SourceTypePhoto   SourceType = "photo"
-	SourceTypePrint   SourceType = "print"
-	SourceTypeSticker SourceType = "sticker"
-	SourceTypeStamp   SourceType = "stamp"
-	SourceTypeEmoji   SourceType = "emoji"
-	SourceTypeUnknown SourceType = "unknown"
-)
-
-type PhotoRecord struct {
-	SourcePath         string     `json:"source_path"`
-	SourceType         SourceType `json:"source_type"`
-	WorldID            string     `json:"world_id,omitempty"`
-	WorldName          string     `json:"world_name,omitempty"`
-	InstanceID         string     `json:"instance_id,omitempty"`
-	InstanceType       string     `json:"instance_type,omitempty"`
-	ShootDate          string     `json:"shoot_date,omitempty"`
-	AuthorName         string     `json:"author_name,omitempty"`
-	PresentUsers       []string   `json:"present_users,omitempty"`
-	OutputPath         string     `json:"output_path,omitempty"`
-	WorldFilledFromLog bool       `json:"world_filled_from_log,omitempty"`
-}
-
-type ProcessStateEntry struct {
-	Timestamp          string     `json:"timestamp"`
-	SourcePath         string     `json:"source_path"`
-	SourceType         SourceType `json:"source_type"`
-	OutputPath         string     `json:"output_path,omitempty"`
-	EagleStatus        string     `json:"eagle_status"`
-	AmazonStatus       string     `json:"amazon_status"`
-	WorldID            string     `json:"world_id,omitempty"`
-	WorldName          string     `json:"world_name,omitempty"`
-	InstanceID         string     `json:"instance_id,omitempty"`
-	InstanceType       string     `json:"instance_type,omitempty"`
-	PresentUsers       []string   `json:"present_users,omitempty"`
-	WorldFilledFromLog bool       `json:"world_filled_from_log,omitempty"`
-	Error              string     `json:"error,omitempty"`
-	Size               int64      `json:"size"`
-	ModTimeUnix        int64      `json:"mod_time_unix"`
-}
-
-type eagleAddRequest struct {
-	Path       string   `json:"path"`
-	Name       string   `json:"name"`
-	Website    string   `json:"website,omitempty"`
-	Tags       []string `json:"tags,omitempty"`
-	Folders    []string `json:"folders,omitempty"`
-	Annotation string   `json:"annotation,omitempty"`
-}
-
-func runSubcommand(args []string) (bool, error) {
-	if len(args) == 0 {
-		return false, nil
+func resolveOutputDir(imagePath, override string) string {
+	if override != "" {
+		return override
 	}
-	switch args[0] {
-	case "watch":
-		fs := flag.NewFlagSet("watch", flag.ExitOnError)
-		root := fs.String("root", appConfig.Watcher.VRChatPhotoRoot, "VRChat写真フォルダ")
-		amazonDir := fs.String("amazon-output-dir", appConfig.Watcher.AmazonPhotosOutputDir, "Amazon Photos用出力ディレクトリ")
-		_ = fs.Parse(args[1:])
-		if *root != "" {
-			appConfig.Watcher.VRChatPhotoRoot = *root
-		}
-		if *amazonDir != "" {
-			appConfig.Watcher.AmazonPhotosOutputDir = *amazonDir
-		}
-		return true, watchPhotoRoot()
-	case "process-file":
-		fs := flag.NewFlagSet("process-file", flag.ExitOnError)
-		amazonDir := fs.String("amazon-output-dir", appConfig.Watcher.AmazonPhotosOutputDir, "Amazon Photos用出力ディレクトリ")
-		_ = fs.Parse(args[1:])
-		if *amazonDir != "" {
-			appConfig.Watcher.AmazonPhotosOutputDir = *amazonDir
-		}
-		if fs.NArg() != 1 {
-			return true, errors.New("process-file には画像パスを1つだけ指定してください")
-		}
-		entry := processWatchedFile(fs.Arg(0), true)
-		if entry.Error != "" {
-			return true, errors.New(entry.Error)
-		}
-		return true, nil
-	case "test-eagle":
-		return true, testEagleConnection()
-	case "print-config":
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return true, enc.Encode(appConfig)
-	case "retry-failed":
-		return true, retryFailed()
-	case "reprocess-state":
-		return true, reprocessState()
-	default:
-		return false, nil
-	}
+	return getOutputDir(imagePath)
 }
 
 func eagleEnabled() bool {
 	return appConfig.Eagle.Enabled == nil || *appConfig.Eagle.Enabled
-}
-
-func classifySourceType(path string) SourceType {
-	lowerPath := strings.ToLower(filepath.ToSlash(path))
-	lowerBase := strings.ToLower(filepath.Base(path))
-	if strings.Contains(lowerPath, "/stickers/") {
-		return SourceTypeSticker
-	}
-	if strings.Contains(lowerPath, "/print/") {
-		return SourceTypePrint
-	}
-	if strings.Contains(lowerPath, "/stamp/") {
-		return SourceTypeStamp
-	}
-	if strings.Contains(lowerPath, "emoji") || strings.Contains(lowerPath, "emojis") ||
-		strings.Contains(lowerPath, "emote") || strings.Contains(lowerPath, "emoticon") {
-		return SourceTypeEmoji
-	}
-	re := regexp.MustCompile(`(?i)^VRChat_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.\d+_.*`)
-	if re.MatchString(lowerBase) {
-		return SourceTypePhoto
-	}
-	return SourceTypeUnknown
 }
 
 func buildPhotoRecord(path string, sourceType SourceType) PhotoRecord {
@@ -1460,46 +1218,6 @@ func (t *VRChatLogTracker) writeVisitEventForDay(day string, entry VRChatVisitEv
 	}
 }
 
-func waitForStableFile(path string) error {
-	if appConfig.Watcher.FileStabilityWaitSeconds > 0 {
-		time.Sleep(time.Duration(appConfig.Watcher.FileStabilityWaitSeconds) * time.Second)
-	}
-	interval := appConfig.Watcher.StableCheckIntervalSeconds
-	if interval <= 0 {
-		interval = 1
-	}
-	needed := appConfig.Watcher.StableCheckCount
-	if needed <= 0 {
-		needed = 3
-	}
-	var lastSize int64 = -1
-	var lastMod time.Time
-	stableCount := 0
-	for stableCount < needed {
-		info, err := os.Stat(path)
-		if err != nil {
-			return err
-		}
-		f, err := os.Open(path)
-		if err != nil {
-			time.Sleep(time.Duration(interval) * time.Second)
-			continue
-		}
-		_ = f.Close()
-		if info.Size() == lastSize && info.ModTime().Equal(lastMod) {
-			stableCount++
-		} else {
-			stableCount = 1
-			lastSize = info.Size()
-			lastMod = info.ModTime()
-		}
-		if stableCount < needed {
-			time.Sleep(time.Duration(interval) * time.Second)
-		}
-	}
-	return nil
-}
-
 func watchPhotoRoot() error {
 	if vrchatContext == nil {
 		vrchatContext = startVRChatLogTracker()
@@ -1540,8 +1258,8 @@ func watchPhotoRoot() error {
 			go func(p string) {
 				if err := waitForStableFile(p); err != nil {
 					entry := stateEntryForPath(p)
-					entry.EagleStatus = "skipped"
-					entry.AmazonStatus = "failed"
+					entry.EagleStatus = processingStatusSkipped
+					entry.AmazonStatus = processingStatusFailed
 					entry.Error = fmt.Sprintf("ファイル安定待ちに失敗しました: %v", err)
 					appendState(entry)
 					appendLog(entry.Error)
@@ -1558,64 +1276,23 @@ func watchPhotoRoot() error {
 	}
 }
 
-func scanImageFiles(root string) ([]string, error) {
-	var paths []string
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			if strings.EqualFold(d.Name(), "annotated") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if isSupportedInputFile(path, appConfig.Image.SupportedInputExtensions) {
-			abs, err := filepath.Abs(path)
-			if err == nil {
-				paths = append(paths, abs)
-			}
-		}
-		return nil
-	})
-	sort.Strings(paths)
-	return paths, err
-}
-
 func processWatchedFile(path string, force bool) ProcessStateEntry {
 	absPath, _ := filepath.Abs(path)
 	if !force && alreadyProcessed(absPath) {
-		entry := stateEntryForPath(absPath)
-		entry.EagleStatus = "skipped"
-		entry.AmazonStatus = "skipped"
-		return entry
+		return skippedProcessState(absPath)
 	}
 	sourceType := classifySourceType(absPath)
 	record := buildPhotoRecord(absPath, sourceType)
-	entry := stateEntryForPath(absPath)
-	entry.SourceType = sourceType
-	entry.WorldID = record.WorldID
-	entry.WorldName = record.WorldName
-	entry.InstanceID = record.InstanceID
-	entry.InstanceType = record.InstanceType
-	entry.PresentUsers = record.PresentUsers
-	entry.WorldFilledFromLog = record.WorldFilledFromLog
+	entry := processStateForRecord(record)
 
-	if !eagleEnabled() {
-		entry.EagleStatus = "skipped"
-	} else if err := exportToEagle(record); err != nil {
-		entry.EagleStatus = "failed"
-		entry.Error = joinErrors(entry.Error, fmt.Sprintf("eagle: %v", err))
-	} else {
-		entry.EagleStatus = "success"
-	}
+	processEagleExport(&entry, record)
 	outputPath, err := exportToAmazon(record)
 	entry.OutputPath = outputPath
 	if err != nil {
-		entry.AmazonStatus = "failed"
+		entry.AmazonStatus = processingStatusFailed
 		entry.Error = joinErrors(entry.Error, fmt.Sprintf("amazon: %v", err))
 	} else {
-		entry.AmazonStatus = "success"
+		entry.AmazonStatus = processingStatusSuccess
 	}
 	appendState(entry)
 	if entry.Error != "" {
@@ -1625,94 +1302,6 @@ func processWatchedFile(path string, force bool) ProcessStateEntry {
 		appendLog(fmt.Sprintf("処理完了: %s", absPath))
 	}
 	return entry
-}
-
-func exportToEagle(record PhotoRecord) error {
-	req := buildEagleRequest(record)
-	body, err := json.Marshal(req)
-	if err != nil {
-		return err
-	}
-	url := strings.TrimRight(appConfig.Eagle.BaseURL, "/") + "/api/v2/item/add"
-	client := http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("HTTPステータス %s: %s", resp.Status, strings.TrimSpace(string(data)))
-	}
-	var result struct {
-		Status  string `json:"status"`
-		Message string `json:"message"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return fmt.Errorf("Eagle API応答の解析に失敗しました: %v", err)
-	}
-	if !strings.EqualFold(result.Status, "success") {
-		if result.Message == "" {
-			result.Message = "詳細なし"
-		}
-		return fmt.Errorf("Eagle APIエラー: %s", result.Message)
-	}
-	return nil
-}
-
-func buildEagleRequest(record PhotoRecord) eagleAddRequest {
-	tags := []string{"VRChat", "type:" + string(record.SourceType)}
-	if record.WorldName != "" && (record.SourceType == SourceTypePhoto || record.SourceType == SourceTypePrint) {
-		tags = append(tags, "wrld:"+record.WorldName)
-	}
-	if ym := shootMonth(record.ShootDate); ym != "" && (record.SourceType == SourceTypePhoto || record.SourceType == SourceTypePrint) {
-		tags = append(tags, ym)
-	}
-	if record.SourceType == SourceTypePhoto {
-		for _, user := range record.PresentUsers {
-			if strings.TrimSpace(user) != "" {
-				tags = append(tags, "user:"+strings.TrimSpace(user))
-			}
-		}
-	}
-	folders := append([]string{}, appConfig.Eagle.Folders...)
-	if appConfig.Eagle.FolderID != "" {
-		folders = append(folders, appConfig.Eagle.FolderID)
-	}
-	req := eagleAddRequest{
-		Path:    record.SourcePath,
-		Name:    strings.TrimSuffix(filepath.Base(record.SourcePath), filepath.Ext(record.SourcePath)),
-		Tags:    tags,
-		Folders: folders,
-	}
-	if (record.SourceType == SourceTypePhoto || record.SourceType == SourceTypePrint) && record.WorldID != "" {
-		req.Website = "https://vrchat.com/home/world/" + record.WorldID
-		var lines []string
-		if record.WorldName != "" {
-			lines = append(lines, "World: "+record.WorldName)
-		}
-		if record.InstanceID != "" {
-			lines = append(lines, "Instance: "+formatEagleInstanceLabel(record.InstanceID, record.InstanceType))
-		}
-		req.Annotation = strings.Join(lines, "\n")
-	}
-	return req
-}
-
-func formatEagleInstanceLabel(instanceID, instanceType string) string {
-	label := instanceID
-	if idx := strings.Index(instanceID, "~"); idx > 0 {
-		label = instanceID[:idx]
-	}
-	typeLabel := strings.TrimSpace(instanceType)
-	if typeLabel != "" {
-		typeLabel = strings.ToUpper(typeLabel[:1]) + typeLabel[1:]
-		if label != "" {
-			return label + " (" + typeLabel + ")"
-		}
-		return typeLabel
-	}
-	return label
 }
 
 func worldIconNameForRecord(record PhotoRecord) string {
@@ -1733,30 +1322,37 @@ func exportToAmazon(record PhotoRecord) (string, error) {
 	}
 	switch record.SourceType {
 	case SourceTypePhoto:
-		configMutex.Lock()
-		oldOutput := appConfig.OutputDir
-		appConfig.OutputDir = outputDir
-		defer func() {
-			appConfig.OutputDir = oldOutput
-			configMutex.Unlock()
-		}()
-		worldURL := ""
-		if record.WorldID != "" {
-			worldURL = "https://vrchat.com/home/world/" + record.WorldID
-		}
-		worldIconName := worldIconNameForRecord(record)
-		if err := addMetadataToImageWithWorldIcon(record.SourcePath, record.ShootDate, record.WorldName, record.AuthorName, "", worldURL, worldIconName); err != nil {
-			return outputPath, err
-		}
-		return adjustOutputPath(outputPath, determineOutputFormat(record.SourcePath, appConfig.Image.OutputFormat)), nil
+		return exportPhotoToAmazon(record, outputDir, outputPath)
 	case SourceTypePrint:
-		if record.WorldID == "" {
-			return outputPath, copyFile(record.SourcePath, outputPath)
-		}
-		return outputPath, addRMQROnlyCopy(record.SourcePath, outputPath, "https://vrchat.com/home/world/"+record.WorldID)
+		return exportPrintToAmazon(record, outputPath)
 	default:
-		return outputPath, copyFile(record.SourcePath, outputPath)
+		return exportUnmodifiedToAmazon(record.SourcePath, outputPath)
 	}
+}
+
+func exportPhotoToAmazon(record PhotoRecord, outputDir, outputPath string) (string, error) {
+	worldURL := ""
+	if record.WorldID != "" {
+		worldURL = worldURLForID(record.WorldID)
+	}
+	worldIconName := worldIconNameForRecord(record)
+	if err := addMetadataToImageWithWorldIconAndOutputDir(record.SourcePath, record.ShootDate, record.WorldName, record.AuthorName, "", worldURL, worldIconName, outputDir); err != nil {
+		return outputPath, err
+	}
+	format := determineOutputFormat(record.SourcePath, appConfig.Image.OutputFormat)
+	return adjustOutputPath(outputPath, format), nil
+}
+
+func exportPrintToAmazon(record PhotoRecord, outputPath string) (string, error) {
+	if record.WorldID == "" {
+		return exportUnmodifiedToAmazon(record.SourcePath, outputPath)
+	}
+	worldURL := worldURLForID(record.WorldID)
+	return outputPath, addRMQROnlyCopy(record.SourcePath, outputPath, worldURL)
+}
+
+func exportUnmodifiedToAmazon(sourcePath, outputPath string) (string, error) {
+	return outputPath, copyFile(sourcePath, outputPath)
 }
 
 func addRMQROnlyCopy(sourcePath, outputPath, worldURL string) error {
@@ -1812,7 +1408,10 @@ func addRMQROnlyCopy(sourcePath, outputPath, worldURL string) error {
 	if encodeErr != nil {
 		return encodeErr
 	}
-	return closeErr
+	if closeErr != nil {
+		return closeErr
+	}
+	return verifyOutputFormat(outputPath, strings.TrimPrefix(strings.ToLower(filepath.Ext(outputPath)), "."))
 }
 
 func amazonOutputDir() string {
@@ -1846,21 +1445,6 @@ func copyFile(sourcePath, outputPath string) error {
 	return closeErr
 }
 
-func testEagleConnection() error {
-	url := strings.TrimRight(appConfig.Eagle.BaseURL, "/") + "/api/v2/app/info"
-	client := http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get(url)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("HTTPステータス %s", resp.Status)
-	}
-	fmt.Printf("Eagle API 接続成功: %s\n", resp.Status)
-	return nil
-}
-
 func retryFailed() error {
 	entries, err := readStateEntries()
 	if err != nil {
@@ -1868,7 +1452,7 @@ func retryFailed() error {
 	}
 	count := 0
 	for _, entry := range entries {
-		if entry.EagleStatus == "failed" || entry.AmazonStatus == "failed" {
+		if entry.EagleStatus == processingStatusFailed || entry.AmazonStatus == processingStatusFailed {
 			if _, err := os.Stat(entry.SourcePath); err != nil {
 				continue
 			}
@@ -1914,149 +1498,6 @@ func reprocessState() error {
 	}
 	fmt.Printf("watch-state.jsonl から %d 件を再処理しました（見つからないファイル %d 件）\n", count, missing)
 	return nil
-}
-
-func appendState(entry ProcessStateEntry) {
-	stateMutex.Lock()
-	defer stateMutex.Unlock()
-	path := appConfig.State.Path
-	if path == "" {
-		path = "watch-state.jsonl"
-	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		appendLog(fmt.Sprintf("state write failed: %v", err))
-		return
-	}
-	defer f.Close()
-	enc := json.NewEncoder(f)
-	if err := enc.Encode(entry); err != nil {
-		appendLog(fmt.Sprintf("state encode failed: %v", err))
-	}
-}
-
-func readStateEntries() ([]ProcessStateEntry, error) {
-	stateMutex.Lock()
-	defer stateMutex.Unlock()
-	path := appConfig.State.Path
-	if path == "" {
-		path = "watch-state.jsonl"
-	}
-	f, err := os.Open(path)
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	var entries []ProcessStateEntry
-	dec := json.NewDecoder(f)
-	for {
-		var entry ProcessStateEntry
-		if err := dec.Decode(&entry); err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			return entries, err
-		}
-		entries = append(entries, entry)
-	}
-	return entries, nil
-}
-
-func alreadyProcessed(path string) bool {
-	entries, err := readStateEntries()
-	if err != nil {
-		return false
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return false
-	}
-	for i := len(entries) - 1; i >= 0; i-- {
-		entry := entries[i]
-		if samePath(entry.SourcePath, path) && entry.Size == info.Size() && entry.ModTimeUnix == info.ModTime().Unix() &&
-			isTerminalSuccess(entry.EagleStatus) && isTerminalSuccess(entry.AmazonStatus) {
-			return true
-		}
-	}
-	return false
-}
-
-func isTerminalSuccess(status string) bool {
-	return status == "success" || status == "skipped"
-}
-
-func stateEntryForPath(path string) ProcessStateEntry {
-	entry := ProcessStateEntry{
-		Timestamp:    time.Now().Format(time.RFC3339),
-		SourcePath:   path,
-		EagleStatus:  "pending",
-		AmazonStatus: "pending",
-	}
-	if info, err := os.Stat(path); err == nil {
-		entry.Size = info.Size()
-		entry.ModTimeUnix = info.ModTime().Unix()
-	}
-	return entry
-}
-
-func samePath(a, b string) bool {
-	aa, errA := filepath.Abs(a)
-	bb, errB := filepath.Abs(b)
-	if errA == nil {
-		a = aa
-	}
-	if errB == nil {
-		b = bb
-	}
-	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
-}
-
-func shootMonth(shootDate string) string {
-	if len(shootDate) >= 7 {
-		return shootDate[:7]
-	}
-	return ""
-}
-
-func joinErrors(a, b string) string {
-	if a == "" {
-		return b
-	}
-	if b == "" {
-		return a
-	}
-	return a + "; " + b
-}
-
-func toastEnabled() bool {
-	return appConfig.Notifications.ToastEnabled == nil || *appConfig.Notifications.ToastEnabled
-}
-
-func notifyFailure(entry ProcessStateEntry) {
-	if !toastEnabled() || runtime.GOOS != "windows" {
-		return
-	}
-	title := "VRC ss annotation"
-	message := "処理に失敗しました: " + filepath.Base(entry.SourcePath)
-	if entry.Error != "" {
-		message += " - " + entry.Error
-	}
-	script := fmt.Sprintf(
-		`Add-Type -AssemblyName System.Windows.Forms; $n=New-Object System.Windows.Forms.NotifyIcon; $n.Icon=[System.Drawing.SystemIcons]::Warning; $n.Visible=$true; $n.ShowBalloonTip(5000,'%s','%s',[System.Windows.Forms.ToolTipIcon]::Warning); Start-Sleep -Seconds 6; $n.Dispose()`,
-		escapePowerShellSingleQuoted(title),
-		escapePowerShellSingleQuoted(message),
-	)
-	cmd := exec.Command("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script)
-	if err := cmd.Start(); err != nil {
-		appendLog(fmt.Sprintf("notification failed: %v", err))
-	}
-}
-
-func escapePowerShellSingleQuoted(s string) string {
-	return strings.ReplaceAll(s, "'", "''")
 }
 
 func main() {
@@ -2175,7 +1616,7 @@ func main() {
 					appendLog(msg)
 					worldURL = ""
 				} else {
-					worldURL = fmt.Sprintf("https://vrchat.com/home/world/%s", record.WorldID)
+					worldURL = worldURLForID(record.WorldID)
 				}
 				worldIconName := worldIconNameForRecord(record)
 				if err := addMetadataToImageWithWorldIcon(path, record.ShootDate, record.WorldName, record.AuthorName, "", worldURL, worldIconName); err != nil {
@@ -2224,116 +1665,6 @@ func main() {
 		// fmt.Println("\n数秒後に自動で終了します...")
 		// time.Sleep(3 * time.Second)
 	}
-}
-
-// detectFileType returns a simple file type name
-func detectFileType(data []byte) string {
-	if len(data) >= 8 && bytes.Equal(data[:8], []byte{137, 80, 78, 71, 13, 10, 26, 10}) {
-		return "PNG"
-	}
-	if len(data) >= 12 && string(data[0:4]) == "RIFF" && string(data[8:12]) == "WEBP" {
-		return "WebP"
-	}
-	if len(data) >= 2 && data[0] == 0xff && data[1] == 0xd8 {
-		return "JPEG"
-	}
-	return "Unknown"
-}
-
-func extractPNGDimensions(data []byte) (int, int, error) {
-	if len(data) < 24 {
-		return 0, 0, errors.New("not a valid PNG for dimension")
-	}
-	offset := 8
-	for offset+8 <= len(data) {
-		length := int(binary.BigEndian.Uint32(data[offset : offset+4]))
-		chunkType := string(data[offset+4 : offset+8])
-		chunkDataStart := offset + 8
-		chunkDataEnd := chunkDataStart + length
-		chunkCRCEnd := chunkDataEnd + 4
-		if chunkDataEnd > len(data) || chunkCRCEnd > len(data) {
-			break
-		}
-		if chunkType == "IHDR" && length >= 8 {
-			width := int(binary.BigEndian.Uint32(data[chunkDataStart : chunkDataStart+4]))
-			height := int(binary.BigEndian.Uint32(data[chunkDataStart+4 : chunkDataStart+8]))
-			return width, height, nil
-		}
-		offset = chunkCRCEnd
-	}
-	return 0, 0, errors.New("IHDR not found")
-}
-
-func parseLittle24(b []byte) int {
-	return int(b[0]) | int(b[1])<<8 | int(b[2])<<16
-}
-
-func extractWebPDimensionsAndFlags(data []byte) (int, int, bool, bool, error) {
-	if len(data) < 12 || string(data[0:4]) != "RIFF" || string(data[8:12]) != "WEBP" {
-		return 0, 0, false, false, errors.New("not a valid WebP")
-	}
-	offset := 12
-	var hasAlpha, hasAnim bool
-	var width, height int
-	for offset+8 <= len(data) {
-		chunkID := string(data[offset : offset+4])
-		size := int(binary.LittleEndian.Uint32(data[offset+4 : offset+8]))
-		chunkDataStart := offset + 8
-		chunkDataEnd := chunkDataStart + size
-		if chunkDataEnd > len(data) {
-			break
-		}
-		switch chunkID {
-		case "VP8X":
-			if size >= 10 {
-				b := data[chunkDataStart:chunkDataEnd]
-				flags := b[0]
-				hasAlpha = (flags & 0x10) != 0
-				hasAnim = (flags & 0x02) != 0
-				w := parseLittle24(b[4:7])
-				h := parseLittle24(b[7:10])
-				width = w + 1
-				height = h + 1
-			}
-		case "ALPH":
-			hasAlpha = true
-		case "ANIM":
-			hasAnim = true
-		case "VP8 ":
-			if size >= 10 {
-				b := data[chunkDataStart:chunkDataEnd]
-				if len(b) >= 10 {
-					w := int(binary.LittleEndian.Uint16(b[6:8]))
-					h := int(binary.LittleEndian.Uint16(b[8:10]))
-					if w != 0 && h != 0 {
-						width = w
-						height = h
-					}
-				}
-			}
-		case "VP8L":
-			if size >= 5 {
-				b := data[chunkDataStart:chunkDataEnd]
-				if len(b) >= 5 {
-					packed := uint32(b[1]) | uint32(b[2])<<8 | uint32(b[3])<<16 | uint32(b[4])<<24
-					w := int((packed & 0x3FFF) + 1)
-					h := int(((packed >> 14) & 0x3FFF) + 1)
-					if w != 0 && h != 0 {
-						width = w
-						height = h
-					}
-				}
-			}
-		}
-		offset = chunkDataEnd
-		if size%2 == 1 {
-			offset++
-		}
-	}
-	if width == 0 || height == 0 {
-		return width, height, hasAlpha, hasAnim, errors.New("dimensions not found")
-	}
-	return width, height, hasAlpha, hasAnim, nil
 }
 
 // プレースホルダー関数（後で実装）
@@ -2845,10 +2176,16 @@ func verifyMetadataIntegrity(origData []byte, outputPath string, isWebP bool) (b
 }
 
 func addMetadataToImage(imagePath string, date string, worldName string, authorName string, authorID string, worldURL string) error {
-	return addMetadataToImageWithWorldIcon(imagePath, date, worldName, authorName, authorID, worldURL, "")
+	return addMetadataToImageWithWorldIconAndOutputDir(imagePath, date, worldName, authorName, authorID, worldURL, "", "")
 }
 
 func addMetadataToImageWithWorldIcon(imagePath string, date string, worldName string, authorName string, authorID string, worldURL string, worldIconName string) error {
+	return addMetadataToImageWithWorldIconAndOutputDir(imagePath, date, worldName, authorName, authorID, worldURL, worldIconName, "")
+}
+
+// addMetadataToImageWithWorldIconAndOutputDir keeps output selection explicit.
+// An empty override preserves the normal config-based destination behavior.
+func addMetadataToImageWithWorldIconAndOutputDir(imagePath string, date string, worldName string, authorName string, authorID string, worldURL string, worldIconName string, outputDirOverride string) error {
 	// 元のファイルデータを読み込み（メタデータ取得用）
 	origData, err := os.ReadFile(imagePath)
 	if err != nil {
@@ -2876,7 +2213,7 @@ func addMetadataToImageWithWorldIcon(imagePath string, date string, worldName st
 	if isPrintCameraResolutionOnly(img) {
 		if worldURL == "" {
 			// ワールド情報なし → 元画像をそのまま保存
-			outputDir := getOutputDir(imagePath)
+			outputDir := resolveOutputDir(imagePath, outputDirOverride)
 			if err := os.MkdirAll(outputDir, 0755); err != nil {
 				return err
 			}
@@ -2920,7 +2257,7 @@ func addMetadataToImageWithWorldIcon(imagePath string, date string, worldName st
 			draw.Draw(outImg, bgRect, scaledQR, image.Point{}, draw.Over)
 		}
 
-		outputDir := getOutputDir(imagePath)
+		outputDir := resolveOutputDir(imagePath, outputDirOverride)
 		if err := os.MkdirAll(outputDir, 0755); err != nil {
 			return err
 		}
@@ -3009,6 +2346,9 @@ func addMetadataToImageWithWorldIcon(imagePath string, date string, worldName st
 			}
 
 			// メタデータ検証は暫定的に無効化（保存確認待ち）
+			if err := verifyOutputFormat(outputPath, outputFormat); err != nil {
+				return err
+			}
 			return nil
 		} else {
 			if strings.HasSuffix(strings.ToLower(outputPath), ".webp") {
@@ -3097,7 +2437,7 @@ func addMetadataToImageWithWorldIcon(imagePath string, date string, worldName st
 	}
 	addTextToImage(newImg, date, worldName, authorName, authorID, worldURL, marginTop, newWidth, newHeight, textColor, bgColor, isDark, worldURL != "", worldIconName)
 
-	outputDir := getOutputDir(imagePath)
+	outputDir := resolveOutputDir(imagePath, outputDirOverride)
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return err
 	}
@@ -3148,6 +2488,9 @@ func addMetadataToImageWithWorldIcon(imagePath string, date string, worldName st
 		}
 
 		// メタデータ検証は暫定的に無効化（保存確認待ち）
+		if err := verifyOutputFormat(outputPath, outputFormat); err != nil {
+			return err
+		}
 		return nil
 	} else {
 		if strings.HasSuffix(strings.ToLower(outputPath), ".webp") {
@@ -3191,103 +2534,6 @@ func addMetadataToImageWithWorldIcon(imagePath string, date string, worldName st
 		// メタデータ検証は暫定的に無効化（保存確認待ち）
 		return nil
 	}
-}
-
-func extractDateFromFilename(filePath string) string {
-	filename := filepath.Base(filePath)
-
-	// パターン1: VRChat_2026-01-15_22-52-38.319_3840x2160
-	// パターン2: VRChat_2026-01-14_21-49-03.450_2048x1440
-	// パターン3: VRChat_1920x1080_2022-06-02_03-11-38.751
-	re1 := regexp.MustCompile(`VRChat_(?:\d+x\d+_)?(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2}-\d{2})`)
-	if matches := re1.FindStringSubmatch(filename); len(matches) > 2 {
-		return matches[1] + "T" + strings.ReplaceAll(matches[2], "-", ":")
-	}
-
-	// パターン: com.vrchat.oculus.quest-20220330-003003
-	re2 := regexp.MustCompile(`-(\d{8})-(\d{6})`)
-	if matches := re2.FindStringSubmatch(filename); len(matches) > 2 {
-		dateStr := matches[1]
-		timeStr := matches[2]
-		return dateStr[0:4] + "-" + dateStr[4:6] + "-" + dateStr[6:8] + "T" +
-			timeStr[0:2] + ":" + timeStr[2:4] + ":" + timeStr[4:6]
-	}
-
-	return ""
-}
-
-func formatDateForDisplay(dateStr string) string {
-	// コンフィグで指定されたレイアウト（Go のレイアウト文字列）で日付を整形する。
-	// 例: "2006-01-02 Mon 15:04:05"
-	layout := strings.TrimSpace(appConfig.DateFormat)
-	useUpperWeekday := false
-	if layout == "" {
-		layout = "2006-01-02 Mon 15:04:05"
-		useUpperWeekday = true // 既存デフォルトに近い表記を維持
-	}
-
-	// よくある入力フォーマットを順に試す
-	candidates := []string{
-		time.RFC3339Nano,
-		time.RFC3339,
-		"2006-01-02T15:04:05",
-		"2006-01-02 15:04:05",
-		"2006-01-02 15:04:05.000",
-		"2006-01-02",
-	}
-	for _, p := range candidates {
-		if t, err := time.Parse(p, dateStr); err == nil {
-			formatted := t.Format(layout)
-			if useUpperWeekday {
-				weekday := t.Format("Mon")
-				formatted = strings.ReplaceAll(formatted, weekday, strings.ToUpper(weekday))
-			}
-			return formatted
-		}
-	}
-
-	// パースできなければ元の文字列を返す
-	return dateStr
-}
-
-// rMQRコード（長方形QRコード）を生成
-// rMQRコード（横長型）を生成
-func generateRMQR(url string, isDark bool) (image.Image, error) {
-	// rmqr で Rectangular Micro QR コード生成
-	qrImage, err := rmqr.Encode(
-		[]byte(url),
-		rmqr.WithLevel(rmqr.LevelM),
-		rmqr.WithPriority(rmqr.PriorityHeight),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	// 黒背景の場合は反転
-	if isDark {
-		return invertImage(qrImage), nil
-	}
-
-	return qrImage, nil
-}
-
-// 画像を反転する（黒と白を入れ替える）
-func invertImage(img image.Image) image.Image {
-	bounds := img.Bounds()
-	inverted := image.NewRGBA(bounds)
-	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-		for x := bounds.Min.X; x < bounds.Max.X; x++ {
-			r, g, b, a := img.At(x, y).RGBA()
-			// 反転: 各値を 255 - 値 にする (16ビット値を8ビットに変換してから反転)
-			inverted.SetRGBA(x, y, color.RGBA{
-				R: 255 - uint8(r>>8),
-				G: 255 - uint8(g>>8),
-				B: 255 - uint8(b>>8),
-				A: uint8(a >> 8),
-			})
-		}
-	}
-	return inverted
 }
 
 // loadSVGIcon はSVGアイコンを読み込んで、指定された色に置き換えて、画像として返す
@@ -3421,22 +2667,13 @@ func addTextToImage(img *image.RGBA, date, worldName, authorName, authorID, worl
 	colorHex := fmt.Sprintf("%02X%02X%02X", r>>8, g>>8, b>>8)
 
 	// フォント読み込み（日時表示用 - モノスペース）
-	monoFontData := loadFontFromPaths([]string{appConfig.Fonts.MonoFont})
-	var monoFont *truetype.Font
-	if monoFontData != nil {
-		monoFont, _ = truetype.Parse(monoFontData)
-	}
+	monoPaths := append([]string{appConfig.Fonts.MonoFont}, defaultFontPaths()...)
+	monoFont, _ := loadTrueTypeFont(monoPaths)
 
 	// 標準フォント読み込み
-	fontData := loadFontFromPaths([]string{appConfig.Fonts.MainFont})
-	if fontData == nil {
-		// フォントが見つからない場合はフォールバック
-		fontData = loadFontFromPaths(appConfig.Fonts.FallbackFonts)
-	}
-	if fontData == nil {
-		return nil
-	}
-	font, err := truetype.Parse(fontData)
+	fontPaths := append([]string{appConfig.Fonts.MainFont}, appConfig.Fonts.FallbackFonts...)
+	fontPaths = append(fontPaths, defaultFontPaths()...)
+	font, err := loadTrueTypeFont(fontPaths)
 	if err != nil {
 		return nil
 	}

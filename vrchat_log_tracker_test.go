@@ -359,6 +359,133 @@ func TestBuildEagleRequestAddsPresentUserTags(t *testing.T) {
 	}
 }
 
+func TestBuildEagleRequestNormalizesAndDeduplicatesUserTags(t *testing.T) {
+	oldConfig := appConfig
+	defer func() { appConfig = oldConfig }()
+	appConfig = getDefaultConfig()
+	req := buildEagleRequest(PhotoRecord{
+		SourcePath:   "photo.png",
+		SourceType:   SourceTypePhoto,
+		PresentUsers: []string{"user:/ player=うすいえんさん(local)", "うすいえんさん", "/ player=よるみや", "user:/ player=エフギア"},
+	})
+	want := []string{"user:うすいえんさん", "user:よるみや", "user:エフギア"}
+	for _, tag := range want {
+		found := false
+		for _, got := range req.Tags {
+			if got == tag {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("missing normalized tag %q in %#v", tag, req.Tags)
+		}
+	}
+	for _, got := range req.Tags {
+		if strings.Contains(got, "player=") || strings.Contains(got, "/") {
+			t.Errorf("raw player prefix leaked into tag %q", got)
+		}
+	}
+}
+
+func TestProcessStateForRecordPreservesRecordContext(t *testing.T) {
+	record := PhotoRecord{
+		SourcePath:         filepath.Join(t.TempDir(), "photo.png"),
+		SourceType:         SourceTypePhoto,
+		WorldID:            "wrld_test",
+		WorldName:          "Test World",
+		InstanceID:         "12345~friends(usr_owner)",
+		InstanceType:       "friends",
+		PresentUsers:       []string{"Alice"},
+		WorldFilledFromLog: true,
+	}
+
+	entry := processStateForRecord(record)
+	if entry.SourcePath != record.SourcePath || entry.SourceType != record.SourceType {
+		t.Fatalf("source mapping = %#v", entry)
+	}
+	if entry.WorldID != record.WorldID || entry.WorldName != record.WorldName ||
+		entry.InstanceID != record.InstanceID || entry.InstanceType != record.InstanceType {
+		t.Fatalf("world mapping = %#v", entry)
+	}
+	if !reflect.DeepEqual(entry.PresentUsers, record.PresentUsers) || !entry.WorldFilledFromLog {
+		t.Fatalf("context mapping = %#v", entry)
+	}
+}
+
+func TestSkippedProcessStateUsesTerminalStatuses(t *testing.T) {
+	entry := skippedProcessState(filepath.Join(t.TempDir(), "photo.png"))
+	if entry.EagleStatus != processingStatusSkipped || entry.AmazonStatus != processingStatusSkipped {
+		t.Fatalf("skipped state = %#v", entry)
+	}
+	if !isTerminalSuccess(entry.EagleStatus) || !isTerminalSuccess(entry.AmazonStatus) {
+		t.Fatalf("skipped state should be terminal: %#v", entry)
+	}
+}
+
+func TestWorldURLForID(t *testing.T) {
+	if got := worldURLForID(""); got != "" {
+		t.Fatalf("empty world ID URL = %q", got)
+	}
+	want := "https://vrchat.com/home/world/wrld_test"
+	if got := worldURLForID("wrld_test"); got != want {
+		t.Fatalf("world URL = %q; want %q", got, want)
+	}
+}
+
+func TestResolveOutputDirPrefersExplicitOverride(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "photo.png")
+	if got := resolveOutputDir(path, "C:/export"); got != "C:/export" {
+		t.Fatalf("override output dir = %q", got)
+	}
+}
+
+func TestOutputFormatHelpers(t *testing.T) {
+	if got := determineOutputFormat("photo.webp", "auto"); got != "webp" {
+		t.Fatalf("auto WebP format = %q", got)
+	}
+	if got := determineOutputFormat("photo.png", "auto"); got != "png" {
+		t.Fatalf("auto PNG format = %q", got)
+	}
+	if got := determineOutputFormat("photo.jpg", "invalid"); got != "png" {
+		t.Fatalf("invalid format fallback = %q", got)
+	}
+	if !isSupportedInputFile("PHOTO.PNG", nil) || isSupportedInputFile("photo.gif", nil) {
+		t.Fatal("supported extension detection mismatch")
+	}
+	if got := adjustOutputPath("photo.JPG", "webp"); got != "photo.webp" {
+		t.Fatalf("adjusted output path = %q", got)
+	}
+	pngPath := filepath.Join(t.TempDir(), "photo.png")
+	if err := os.WriteFile(pngPath, []byte{137, 80, 78, 71, 13, 10, 26, 10}, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyOutputFormat(pngPath, "png"); err != nil {
+		t.Fatalf("PNG format verification failed: %v", err)
+	}
+	if err := verifyOutputFormat(pngPath, "webp"); err == nil {
+		t.Fatal("mismatched output format was accepted")
+	}
+}
+
+func TestClassifySourceType(t *testing.T) {
+	cases := []struct {
+		path string
+		want SourceType
+	}{
+		{`C:\VRChat\VRChat_2026-07-13_12-34-56.123_3840x2160.png`, SourceTypePhoto},
+		{`C:\VRChat\Print\image.png`, SourceTypePrint},
+		{`C:\VRChat\Stickers\image.png`, SourceTypeSticker},
+		{`C:\VRChat\emoji\smile.png`, SourceTypeEmoji},
+		{`C:\VRChat\other\image.png`, SourceTypeUnknown},
+	}
+	for _, tc := range cases {
+		if got := classifySourceType(tc.path); got != tc.want {
+			t.Errorf("classifySourceType(%q) = %q; want %q", tc.path, got, tc.want)
+		}
+	}
+}
+
 func TestLogFileChangeEndsPreviousVisitAndClearsSnapshot(t *testing.T) {
 	logDir := t.TempDir()
 	visitLogDir := t.TempDir()
