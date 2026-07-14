@@ -50,6 +50,17 @@ func TestVRChatLogParsers(t *testing.T) {
 	}
 }
 
+func TestFormatDateForDisplayLegacyUppercaseWeekday(t *testing.T) {
+	oldConfig := appConfig
+	t.Cleanup(func() { appConfig = oldConfig })
+	appConfig = getDefaultConfig()
+	appConfig.DateFormat = "2006-01-02 MON"
+
+	if got := formatDateForDisplay("2026-07-14T12:00:00+09:00"); got != "2026-07-14 TUE" {
+		t.Fatalf("formatDateForDisplay = %q; want %q", got, "2026-07-14 TUE")
+	}
+}
+
 func TestVRChatLogTrackerSnapshotAndVisitLogs(t *testing.T) {
 	visitLogDir := t.TempDir()
 	tracker := &VRChatLogTracker{
