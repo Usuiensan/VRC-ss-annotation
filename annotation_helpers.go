@@ -27,7 +27,9 @@ func extractDateFromFilename(filePath string) string {
 
 func formatDateForDisplay(dateStr string) string {
 	layout := strings.TrimSpace(appConfig.DateFormat)
-	useUpperWeekday := false
+	legacyUpperWeekday := strings.Contains(layout, "MON")
+	layout = strings.ReplaceAll(layout, "MON", "Mon")
+	useUpperWeekday := legacyUpperWeekday
 	if layout == "" {
 		layout = "2006-01-02 Mon 15:04:05"
 		useUpperWeekday = true
