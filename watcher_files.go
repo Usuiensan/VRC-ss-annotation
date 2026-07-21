@@ -63,6 +63,9 @@ func scanImageFiles(root string) ([]string, error) {
 			}
 			return nil
 		}
+		if isVRChatPrintCameraCopy(path) {
+			return nil
+		}
 		if isSupportedInputFile(path, appConfig.Image.SupportedInputExtensions) {
 			abs, err := filepath.Abs(path)
 			if err == nil {

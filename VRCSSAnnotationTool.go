@@ -348,27 +348,62 @@ func buildPhotoRecord(path string, sourceType SourceType) PhotoRecord {
 	if record.ShootDate == "" {
 		record.ShootDate = extractDateFromFilename(path)
 	}
-	if ctx := ensureVRChatContext(); ctx != nil {
-		snap := ctx.SnapshotAt(photoTimeForRecord(record, path))
-		if snap.WorldID != "" {
-			record.WorldID = snap.WorldID
-			record.WorldFilledFromLog = true
+	if authorName, shootDate, ok := vrcxPrintCameraFilenameMetadata(path); ok {
+		if record.AuthorName == "" {
+			record.AuthorName = authorName
 		}
-		if snap.WorldName != "" {
-			record.WorldName = snap.WorldName
-			record.WorldFilledFromLog = true
-		}
-		if snap.InstanceID != "" {
-			record.InstanceID = snap.InstanceID
-		}
-		if snap.InstanceType != "" {
-			record.InstanceType = snap.InstanceType
-		}
-		if len(snap.PresentUsers) > 0 {
-			record.PresentUsers = snap.PresentUsers
+		if record.ShootDate == "" {
+			record.ShootDate = shootDate
 		}
 	}
+	if ctx := ensureVRChatContext(); ctx != nil {
+		snap := ctx.SnapshotAt(photoTimeForRecord(record, path))
+		applyLogSnapshotToRecord(&record, snap)
+	}
 	return record
+}
+
+func applyLogSnapshotToRecord(record *PhotoRecord, snap VRChatContextSnapshot) {
+	if record == nil {
+		return
+	}
+	// Print CameraのWorld IDは画像メタデータを正とする。欠落時の時刻補完は、
+	// 他者である撮影者がその時刻の同席者一覧にいる場合だけ許可する。
+	if record.SourceType == SourceTypePrint {
+		if record.WorldID != "" || !snapshotContainsUser(snap, record.AuthorName) {
+			return
+		}
+	}
+	if snap.WorldID != "" {
+		record.WorldID = snap.WorldID
+		record.WorldFilledFromLog = true
+	}
+	if snap.WorldName != "" {
+		record.WorldName = snap.WorldName
+		record.WorldFilledFromLog = true
+	}
+	if snap.InstanceID != "" {
+		record.InstanceID = snap.InstanceID
+	}
+	if snap.InstanceType != "" {
+		record.InstanceType = snap.InstanceType
+	}
+	if len(snap.PresentUsers) > 0 {
+		record.PresentUsers = append([]string(nil), snap.PresentUsers...)
+	}
+}
+
+func snapshotContainsUser(snap VRChatContextSnapshot, authorName string) bool {
+	authorName = normalizeEagleUserName(authorName)
+	if authorName == "" {
+		return false
+	}
+	for _, user := range snap.PresentUsers {
+		if strings.EqualFold(normalizeEagleUserName(user), authorName) {
+			return true
+		}
+	}
+	return false
 }
 
 func photoTimeForRecord(record PhotoRecord, path string) time.Time {
@@ -709,7 +744,17 @@ func (t *VRChatLogTracker) applyVisitEvent(at time.Time, event VRChatVisitEvent)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	switch event.Event {
-	case "world_join", "world_name", "player_join", "player_left", "day_rollover_start", "day_rollover_end", "log_file_changed":
+	case "world_leave", "day_rollover_end", "log_file_changed":
+		t.worldID = ""
+		t.worldName = ""
+		t.instanceID = ""
+		t.instanceType = ""
+		t.presentUsers = make(map[string]bool)
+		t.visitStartedAt = time.Time{}
+		t.day = at.Format("2006-01-02")
+		t.history = append(t.history, t.snapshotLocked(at))
+		return
+	case "world_join", "world_name", "player_join", "player_left", "day_rollover_start":
 		if event.WorldID != "" {
 			t.worldID = event.WorldID
 		} else if event.Event == "world_join" || event.Event == "log_file_changed" {
@@ -750,14 +795,6 @@ func (t *VRChatLogTracker) applyVisitEvent(at time.Time, event VRChatVisitEvent)
 			if startedAt, err := time.Parse(time.RFC3339, event.VisitStartedAt); err == nil {
 				t.visitStartedAt = startedAt
 			}
-		}
-		if event.Event == "world_leave" || event.Event == "day_rollover_end" || event.Event == "log_file_changed" {
-			t.worldID = ""
-			t.worldName = ""
-			t.instanceID = ""
-			t.instanceType = ""
-			t.presentUsers = make(map[string]bool)
-			t.visitStartedAt = time.Time{}
 		}
 	default:
 		return
@@ -1278,6 +1315,11 @@ func watchPhotoRoot() error {
 
 func processWatchedFile(path string, force bool) ProcessStateEntry {
 	absPath, _ := filepath.Abs(path)
+	if isVRChatPrintCameraCopy(absPath) {
+		entry := skippedProcessState(absPath)
+		entry.SourceType = SourceTypePrint
+		return entry
+	}
 	if !force && alreadyProcessed(absPath) {
 		return skippedProcessState(absPath)
 	}

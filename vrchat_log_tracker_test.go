@@ -485,6 +485,7 @@ func TestClassifySourceType(t *testing.T) {
 		want SourceType
 	}{
 		{`C:\VRChat\VRChat_2026-07-13_12-34-56.123_3840x2160.png`, SourceTypePhoto},
+		{`C:\VRCX\Tokiame_2026-07-18_02-02-22.384_prnt_9b9f76b4-f45c-4fe1-bae0-dc2ac05e425f.png`, SourceTypePrint},
 		{`C:\VRChat\Print\image.png`, SourceTypePrint},
 		{`C:\VRChat\Stickers\image.png`, SourceTypeSticker},
 		{`C:\VRChat\emoji\smile.png`, SourceTypeEmoji},
@@ -494,6 +495,100 @@ func TestClassifySourceType(t *testing.T) {
 		if got := classifySourceType(tc.path); got != tc.want {
 			t.Errorf("classifySourceType(%q) = %q; want %q", tc.path, got, tc.want)
 		}
+	}
+}
+
+func TestVRChatPrintCameraCopyIsExcludedFromScan(t *testing.T) {
+	oldConfig := appConfig
+	defer func() { appConfig = oldConfig }()
+	appConfig = getDefaultConfig()
+
+	root := t.TempDir()
+	vrcxName := "Tokiame_2026-07-18_02-02-22.384_prnt_9b9f76b4-f45c-4fe1-bae0-dc2ac05e425f.png"
+	vrchatName := "VRChat_2026-07-18_02-02-22.384_2048x1440.png"
+	for _, name := range []string{vrcxName, vrchatName} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("image"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !isVRChatPrintCameraCopy(vrchatName) {
+		t.Fatal("VRChat Print Camera filename was not recognized")
+	}
+	paths, err := scanImageFiles(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 1 || filepath.Base(paths[0]) != vrcxName {
+		t.Fatalf("scan paths = %#v; want only %q", paths, vrcxName)
+	}
+}
+
+func TestVRCXPrintCameraFilenameMetadata(t *testing.T) {
+	name := "Tokiame_2026-07-18_02-02-22.384_prnt_9b9f76b4-f45c-4fe1-bae0-dc2ac05e425f.png"
+	author, shootDate, ok := vrcxPrintCameraFilenameMetadata(name)
+	if !ok || author != "Tokiame" || shootDate != "2026-07-18T02:02:22.384" {
+		t.Fatalf("metadata = (%q, %q, %v)", author, shootDate, ok)
+	}
+}
+
+func TestPrintCameraUsesMetadataWorldIDBeforeLog(t *testing.T) {
+	record := PhotoRecord{
+		SourceType: SourceTypePrint,
+		WorldID:    "wrld_metadata",
+		WorldName:  "Metadata World",
+		AuthorName: "Photographer",
+	}
+	applyLogSnapshotToRecord(&record, VRChatContextSnapshot{
+		WorldID:      "wrld_log",
+		WorldName:    "Log World",
+		PresentUsers: []string{"Photographer"},
+	})
+	if record.WorldID != "wrld_metadata" || record.WorldName != "Metadata World" {
+		t.Fatalf("metadata world was overwritten: %#v", record)
+	}
+	if record.WorldFilledFromLog {
+		t.Fatal("metadata world was incorrectly marked as log-filled")
+	}
+}
+
+func TestPrintCameraLogFallbackRequiresPhotographerPresence(t *testing.T) {
+	snap := VRChatContextSnapshot{
+		WorldID:      "wrld_log",
+		WorldName:    "Log World",
+		PresentUsers: []string{"Alice"},
+	}
+
+	absent := PhotoRecord{SourceType: SourceTypePrint, AuthorName: "Bob"}
+	applyLogSnapshotToRecord(&absent, snap)
+	if absent.WorldID != "" {
+		t.Fatalf("world was filled without photographer presence: %#v", absent)
+	}
+
+	present := PhotoRecord{SourceType: SourceTypePrint, AuthorName: " alice "}
+	applyLogSnapshotToRecord(&present, snap)
+	if present.WorldID != "wrld_log" || !present.WorldFilledFromLog {
+		t.Fatalf("world was not filled for present photographer: %#v", present)
+	}
+}
+
+func TestVisitLogWorldLeaveClearsHistoricalUsers(t *testing.T) {
+	tracker := &VRChatLogTracker{presentUsers: make(map[string]bool)}
+	joined := time.Date(2026, 7, 18, 2, 0, 0, 0, time.Local)
+	left := joined.Add(5 * time.Minute)
+	tracker.applyVisitEvent(joined, VRChatVisitEvent{
+		Event:        "world_join",
+		WorldID:      "wrld_test",
+		PresentUsers: []string{"Already Left"},
+	})
+	tracker.applyVisitEvent(left, VRChatVisitEvent{
+		Event:        "world_leave",
+		WorldID:      "wrld_test",
+		PresentUsers: []string{"Already Left"},
+	})
+
+	snap := tracker.SnapshotAt(left.Add(time.Second))
+	if snap.WorldID != "" || len(snap.PresentUsers) != 0 {
+		t.Fatalf("leave snapshot retained stale context: %#v", snap)
 	}
 }
 
