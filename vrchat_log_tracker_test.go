@@ -335,6 +335,35 @@ func TestBuildPhotoRecordLoadsUsersFromRawOutputLogs(t *testing.T) {
 	}
 }
 
+func TestPhotoDoesNotTagUserAfterTheyLeaveWithDifferentLogSpelling(t *testing.T) {
+	oldConfig := appConfig
+	t.Cleanup(func() { appConfig = oldConfig })
+	appConfig = getDefaultConfig()
+
+	tracker := &VRChatLogTracker{presentUsers: make(map[string]bool)}
+	logPath := filepath.Join(t.TempDir(), "output_log_2026-07-10_01-00-00.txt")
+	tracker.handleLogLine(logPath, "2026.07.10 01:00:00 Log -  [Behaviour] Joining wrld_test:32692~friends(usr_owner)")
+	tracker.handleLogLine(logPath, `2026.07.10 01:01:00 Log -  [Behaviour] OnPlayerJoined Alice (usr_1)`)
+	tracker.handleLogLine(logPath, `2026.07.10 01:02:00 Log -  [Behaviour] OnPlayerLeft alice (usr_1)`)
+
+	at, err := time.ParseInLocation("2006-01-02T15:04:05", "2026-07-10T01:03:00", time.Local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := tracker.SnapshotAt(at)
+	record := PhotoRecord{
+		SourceType:   SourceTypePhoto,
+		WorldID:      snap.WorldID,
+		PresentUsers: snap.PresentUsers,
+	}
+	tags := buildEagleRequest(record).Tags
+	for _, tag := range tags {
+		if tag == "user:Alice" || tag == "user:alice" {
+			t.Fatalf("departed user was tagged: %#v", tags)
+		}
+	}
+}
+
 func TestBuildEagleRequestAddsPresentUserTags(t *testing.T) {
 	oldConfig := appConfig
 	defer func() { appConfig = oldConfig }()

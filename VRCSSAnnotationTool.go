@@ -661,7 +661,7 @@ func (t *VRChatLogTracker) handleLogLineSnapshotOnly(line string) {
 		return
 	}
 	if userName, matched := parsePlayerLeft(line); matched {
-		delete(t.presentUsers, userName)
+		deletePresentUser(t.presentUsers, userName)
 		t.history = append(t.history, t.snapshotLocked(ts))
 		return
 	}
@@ -787,7 +787,7 @@ func (t *VRChatLogTracker) applyVisitEvent(at time.Time, event VRChatVisitEvent)
 			t.presentUsers[event.UserName] = true
 		}
 		if event.Event == "player_left" && event.UserName != "" {
-			delete(t.presentUsers, event.UserName)
+			deletePresentUser(t.presentUsers, event.UserName)
 		}
 		t.day = at.Format("2006-01-02")
 		t.history = append(t.history, t.snapshotLocked(at))
@@ -972,7 +972,7 @@ func (t *VRChatLogTracker) handleLogLine(logPath, line string) {
 	}
 	if userName, matched := parsePlayerLeft(line); matched {
 		t.mu.Lock()
-		delete(t.presentUsers, userName)
+		deletePresentUser(t.presentUsers, userName)
 		snap := t.snapshotLocked(ts)
 		t.history = append(t.history, snap)
 		t.mu.Unlock()
@@ -1059,6 +1059,18 @@ func cleanVRChatUserName(value string) string {
 	}
 	value = strings.Trim(value, `"'`)
 	return strings.TrimSpace(value)
+}
+
+func deletePresentUser(presentUsers map[string]bool, userName string) {
+	target := normalizeEagleUserName(userName)
+	if target == "" {
+		return
+	}
+	for presentUser := range presentUsers {
+		if strings.EqualFold(normalizeEagleUserName(presentUser), target) {
+			delete(presentUsers, presentUser)
+		}
+	}
 }
 
 func classifyInstanceType(instanceID string) string {
