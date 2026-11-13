@@ -34,15 +34,18 @@ func vrcxPrintCameraFilenameMetadata(path string) (authorName, shootDate string,
 }
 
 func classifySourceType(path string) SourceType {
-	lowerPath := strings.ToLower(filepath.ToSlash(path))
-	lowerBase := strings.ToLower(filepath.Base(path))
+	// filepath.ToSlash only replaces the host OS separator. Logs and test
+	// inputs may contain Windows paths even when the tool runs on Linux.
+	normalized := strings.ReplaceAll(path, `\`, "/")
+	lowerPath := strings.ToLower(normalized)
+	lowerBase := strings.ToLower(filepath.Base(normalized))
 	if strings.Contains(lowerPath, "/stickers/") {
 		return SourceTypeSticker
 	}
 	if strings.Contains(lowerPath, "/print/") {
 		return SourceTypePrint
 	}
-	if vrcxPrintCameraFilenamePattern.MatchString(filepath.Base(path)) {
+	if vrcxPrintCameraFilenamePattern.MatchString(filepath.Base(normalized)) {
 		return SourceTypePrint
 	}
 	if strings.Contains(lowerPath, "/stamp/") {
