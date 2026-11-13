@@ -35,35 +35,38 @@ type eagleAddRequest struct {
 	Annotation string   `json:"annotation,omitempty"`
 }
 
-func exportToEagle(record PhotoRecord) error {
+func exportToEagle(record PhotoRecord) (string, error) {
 	body, err := json.Marshal(buildEagleRequest(record))
 	if err != nil {
-		return err
+		return "", err
 	}
 	url := strings.TrimRight(appConfig.Eagle.BaseURL, "/") + "/api/v2/item/add"
 	resp, err := (&http.Client{Timeout: 10 * time.Second}).Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("HTTPステータス %s: %s", resp.Status, strings.TrimSpace(string(data)))
+		return "", fmt.Errorf("HTTPステータス %s: %s", resp.Status, strings.TrimSpace(string(data)))
 	}
 	var result struct {
 		Status  string `json:"status"`
 		Message string `json:"message"`
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return fmt.Errorf("Eagle API応答の解析に失敗しました: %v", err)
+		return "", fmt.Errorf("Eagle API応答の解析に失敗しました: %v", err)
 	}
 	if !strings.EqualFold(result.Status, "success") {
 		if result.Message == "" {
 			result.Message = "詳細なし"
 		}
-		return fmt.Errorf("Eagle APIエラー: %s", result.Message)
+		return "", fmt.Errorf("Eagle APIエラー: %s", result.Message)
 	}
-	return nil
+	return result.Data.ID, nil
 }
 
 func buildEagleRequest(record PhotoRecord) eagleAddRequest {

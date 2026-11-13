@@ -80,7 +80,7 @@ func alreadyProcessed(path string) bool {
 }
 
 func isTerminalSuccess(status string) bool {
-	return status == processingStatusSuccess || status == processingStatusSkipped
+	return status == processingStatusSuccess || status == processingStatusSkipped || status == processingStatusDuplicate
 }
 
 func stateEntryForPath(path string) ProcessStateEntry {

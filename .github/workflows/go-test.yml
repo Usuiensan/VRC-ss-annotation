@@ -1,0 +1,27 @@
+name: Go tests
+
+on:
+  push:
+    branches: [main, feat/eagle-hash-duplicate-guard]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Resolve modules
+        run: |
+          go mod tidy
+          echo GO_SUM_BEGIN
+          cat go.sum
+          echo GO_SUM_END
+      - name: Test
+        run: go test -race ./...
+      - name: Verify formatting
+        run: |
+          gofmt -d *.go
+          test -z "$(gofmt -l *.go)"

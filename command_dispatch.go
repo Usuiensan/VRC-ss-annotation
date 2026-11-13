@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"os"
 )
 
@@ -41,6 +42,33 @@ func runSubcommand(args []string) (bool, error) {
 		return true, nil
 	case "test-eagle":
 		return true, testEagleConnection()
+	case "eagle-index":
+		if len(args) != 2 {
+			return true, errors.New("eagle-index には build / sync / status を指定してください")
+		}
+		idx, err := getEagleHashIndex()
+		if err != nil {
+			return true, err
+		}
+		switch args[1] {
+		case "build":
+			err = idx.Sync(true)
+		case "sync":
+			err = idx.Sync(false)
+		case "status":
+			library, count, statusErr := idx.Status()
+			if statusErr != nil {
+				return true, statusErr
+			}
+			fmt.Printf("Eagleライブラリ: %s\n登録済みハッシュ: %d 件\n", library, count)
+			return true, nil
+		default:
+			return true, errors.New("eagle-index には build / sync / status を指定してください")
+		}
+		if err == nil {
+			fmt.Println("Eagleハッシュ索引を同期しました")
+		}
+		return true, err
 	case "print-config":
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")

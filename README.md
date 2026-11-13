@@ -146,6 +146,9 @@ VRCSSAnnotationTool.exe watch --root "C:\FURUKAWA\VRChat_pic"
 | `print-config` | 読み込み済み設定をJSONで表示 |
 | `retry-failed` | `watch-state.jsonl` の失敗エントリを再試行 |
 | `reprocess-state` | `watch-state.jsonl` の既存 `source_path` を重複排除して全件再処理 |
+| `eagle-index build` | Eagle登録済み画像のハッシュ索引を全件再構築 |
+| `eagle-index sync` | ハッシュ索引を差分同期 |
+| `eagle-index status` | 現在のライブラリの索引件数を表示 |
 
 種別分類と出力:
 
@@ -162,11 +165,27 @@ Print Cameraは、VRCX固有の `撮影者_YYYY-MM-DD_HH-MM-SS.mmm_prnt_UUID` �
 
 Eagle 連携は `POST http://localhost:41595/api/v2/item/add` を使います。Eagle が起動していない場合でも Amazon Photos 出力は独立して実行され、失敗内容は `watch-state.jsonl` に追記されます。
 
+### Eagle登録済み画像の重複インポート防止
+
+Eagle側の元画像（PNG/JPEG/WebP）のSHA-256を読み取り専用で索引化し、**インポート要求の前**に監視画像と照合します。ファイル名・元の保存場所が異なっていても、バイト列が同じ画像はEagle登録をスキップします（`eagle_status: "duplicate"`）。Amazon Photos側の処理は継続します。再処理・失敗再試行にも同じ判定が適用されます。
+
+最初の同期ではEagleライブラリ全体をハッシュ化するため時間がかかります。以後はファイルサイズ・最終更新時刻を用いて変更画像だけを再計算し、監視中は約1分ごとに同期します。本ツールでの登録成功後には即座に索引へ反映します。Eagleが切断されている、元画像を読み込めない、索引同期が失敗した等の場合、未確認のままEagleへインポートすることはせず、Eagle出力を失敗として記録します。
+
+索引は既定でユーザーのキャッシュ領域内の `VRCSSAnnotationTool/eagle-hash-index.sqlite` に保存されます。`eagle.hashIndexPath` を設定すると保存先を変更できます。Eagle本体のライブラリや `metadata.json` は変更しません。Eagle Web API V2（Eagle 4.0 Build 21以降）およびライブラリ内の元画像への読み取りアクセスが必要です。
+
+```powershell
+VRCSSAnnotationTool.exe eagle-index build   # 全件再計算
+VRCSSAnnotationTool.exe eagle-index sync    # 差分同期
+VRCSSAnnotationTool.exe eagle-index status  # 件数確認
+```
+
+判定は完全に同じバイト列に限られます。再圧縮・リサイズ等でデータが変わった画像の類似判定は行いません。また、外部プログラムが索引同期後に同じ画像を同時登録する競合まで完全に防げるわけではありません。
+
 `watch` / `process-file` / `reprocess-state` は VRChat の `output_log_*.txt` を読み、撮影時刻にいたワールド状態を復元します。`watcher.vrchatLogDir` が空の場合は `%USERPROFILE%\AppData\LocalLow\VRChat\VRChat` を使います。`watch` 実行中はワールド移動、同席ユーザーの join/leave を `visitLogDir` 配下に `vrchat-visits-YYYY-MM-DD.jsonl` として日別に記録します。
 
 通常写真では、撮影時刻に対応する `output_log` のワールドIDまたはワールド名が取れた場合、画像内メタデータよりログ復元結果を優先します。Print Cameraでは画像メタデータの `worldID` を優先してrMQRを作成します。Print Cameraの `worldID` が欠落している場合は、その撮影時刻の同席者一覧に撮影者が記録されている場合だけログから補完します。同席ユーザーとインスタンス情報はログから取得できた場合に Eagle の `user:*` タグと `annotation` に反映します。
 
-`reprocess-state` は既存の `watch-state.jsonl` を破壊的に書き換えません。既存行の `source_path` を読み、存在するファイルを現在のログ復元ルールで再処理し、同じ JSONL 形式の新しい結果を末尾へ追記します。Eagle 側は通常の `item/add` を呼ぶため、既に登録済みの画像を再インポートする運用では Eagle 側の重複扱いに注意してください。
+`reprocess-state` は既存の `watch-state.jsonl` を破壊的に書き換えません。既存行の `source_path` を読み、存在するファイルを現在のログ復元ルールで再処理し、同じ JSONL 形式の新しい結果を末尾へ追記します。Eagleに同じ画像が存在する場合はハッシュ照合によりインポートを除外します。
 
 ---
 

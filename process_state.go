@@ -17,6 +17,7 @@ const (
 	processingStatusSuccess = "success"
 	processingStatusFailed  = "failed"
 	processingStatusSkipped = "skipped"
+	processingStatusDuplicate = "duplicate"
 )
 
 // processStateForRecord copies the domain data into the persisted state model.
@@ -46,9 +47,23 @@ func processEagleExport(entry *ProcessStateEntry, record PhotoRecord) {
 		entry.EagleStatus = processingStatusSkipped
 		return
 	}
-	if err := exportToEagle(record); err != nil {
+	idx, err := getEagleHashIndex()
+	if err != nil {
 		entry.EagleStatus = processingStatusFailed
 		entry.Error = joinErrors(entry.Error, "eagle: "+err.Error())
+		return
+	}
+	result, err := idx.Import(record)
+	entry.ContentSHA256 = result.Hash
+	entry.EagleItemID = result.ItemID
+	if err != nil {
+		entry.EagleStatus = processingStatusFailed
+		entry.Error = joinErrors(entry.Error, "eagle: "+err.Error())
+		return
+	}
+	if result.Duplicate {
+		entry.EagleStatus = processingStatusDuplicate
+		appendLog("Eagle登録済みのためインポートを除外: " + record.SourcePath)
 		return
 	}
 	entry.EagleStatus = processingStatusSuccess

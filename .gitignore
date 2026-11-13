@@ -12,3 +12,6 @@ annotated/
 # 監視・訪問ログ
 watch-state.jsonl
 visit-logs/
+
+# Eagleハッシュ索引（外部保存先を指定した場合も除外）
+eagle-hash-index.sqlite*

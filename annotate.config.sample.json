@@ -50,7 +50,8 @@
     "enabled": true,
     "baseUrl": "http://localhost:41595",
     "folderId": "",
-    "folders": []
+    "folders": [],
+    "hashIndexPath": ""
   },
   "state": {
     "path": "watch-state.jsonl"

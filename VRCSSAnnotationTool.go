@@ -256,6 +256,9 @@ func mergeConfig(def, override *Config) *Config {
 	if len(override.Eagle.Folders) > 0 {
 		def.Eagle.Folders = override.Eagle.Folders
 	}
+	if override.Eagle.HashIndexPath != "" {
+		def.Eagle.HashIndexPath = override.Eagle.HashIndexPath
+	}
 	if override.State.Path != "" {
 		def.State.Path = override.State.Path
 	}
@@ -1288,6 +1291,11 @@ func watchPhotoRoot() error {
 		seen[path] = struct{}{}
 	}
 	fmt.Printf("%s を監視しています（既存ファイル %d 件は対象外）\n", absRoot, len(seen))
+	if eagleEnabled() {
+		// Build the baseline after the initial watcher scan, so files appearing
+		// while the first Eagle sync runs are not silently classified as old.
+		go startEagleIndexSync()
+	}
 	interval := appConfig.Watcher.ScanIntervalSeconds
 	if interval <= 0 {
 		interval = 3

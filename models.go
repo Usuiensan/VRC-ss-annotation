@@ -61,10 +61,11 @@ type WatcherConfig struct {
 }
 
 type EagleConfig struct {
-	Enabled  *bool    `json:"enabled,omitempty"`
-	BaseURL  string   `json:"baseUrl"`
-	FolderID string   `json:"folderId"`
-	Folders  []string `json:"folders"`
+	Enabled       *bool    `json:"enabled,omitempty"`
+	BaseURL       string   `json:"baseUrl"`
+	FolderID      string   `json:"folderId"`
+	Folders       []string `json:"folders"`
+	HashIndexPath string   `json:"hashIndexPath,omitempty"`
 }
 
 type StateConfig struct {
@@ -95,6 +96,8 @@ type ProcessStateEntry struct {
 	SourceType         SourceType `json:"source_type"`
 	OutputPath         string     `json:"output_path,omitempty"`
 	EagleStatus        string     `json:"eagle_status"`
+	EagleItemID        string     `json:"eagle_item_id,omitempty"`
+	ContentSHA256      string     `json:"content_sha256,omitempty"`
 	AmazonStatus       string     `json:"amazon_status"`
 	WorldID            string     `json:"world_id,omitempty"`
 	WorldName          string     `json:"world_name,omitempty"`
