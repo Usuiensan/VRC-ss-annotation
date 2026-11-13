@@ -13,10 +13,10 @@ func worldURLForID(worldID string) string {
 // must remain stable. Keeping them in one place prevents state transitions
 // from silently diverging between the watcher, retry logic, and exporters.
 const (
-	processingStatusPending = "pending"
-	processingStatusSuccess = "success"
-	processingStatusFailed  = "failed"
-	processingStatusSkipped = "skipped"
+	processingStatusPending   = "pending"
+	processingStatusSuccess   = "success"
+	processingStatusFailed    = "failed"
+	processingStatusSkipped   = "skipped"
 	processingStatusDuplicate = "duplicate"
 )
 

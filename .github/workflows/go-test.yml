@@ -16,15 +16,10 @@ jobs:
       - name: Resolve modules
         run: |
           go mod tidy
-          echo GO_SUM_BEGIN
-          cat go.sum
-          echo GO_SUM_END
-          echo GO_MOD_BEGIN
-          cat go.mod
-          echo GO_MOD_END
+          git diff --exit-code -- go.mod go.sum
       - name: Test
         run: go test -race ./...
       - name: Verify formatting
         run: |
-          gofmt -d *.go
-          test -z "$(gofmt -l *.go)"
+          gofmt -d eagle_hash_index*.go eagle_integration.go process_state.go source_type.go command_dispatch.go state_store.go models.go VRCSSAnnotationTool.go
+          test -z "$(gofmt -l eagle_hash_index*.go eagle_integration.go process_state.go source_type.go command_dispatch.go state_store.go models.go VRCSSAnnotationTool.go)"

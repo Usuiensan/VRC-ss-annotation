@@ -53,7 +53,7 @@ func exportToEagle(record PhotoRecord) (string, error) {
 	var result struct {
 		Status  string `json:"status"`
 		Message string `json:"message"`
-		Data struct {
+		Data    struct {
 			ID string `json:"id"`
 		} `json:"data"`
 	}
