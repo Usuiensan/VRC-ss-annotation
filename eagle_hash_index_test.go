@@ -59,6 +59,14 @@ func (fake *fakeEagle) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/api/v2/library/info":
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": "success", "data": map[string]any{"path": fake.library}})
 	case "/api/v2/item/get":
+		// Mirror the real Eagle build used by the owner: any "fields"
+		// parameter makes this endpoint fail with 500 (verified
+		// 2026-11-14; fields=id alone reproduced it). The index must
+		// therefore list items without requesting specific fields.
+		if r.URL.Query().Has("fields") {
+			http.Error(w, "fields parameter unsupported", http.StatusInternalServerError)
+			return
+		}
 		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 		if limit <= 0 {
