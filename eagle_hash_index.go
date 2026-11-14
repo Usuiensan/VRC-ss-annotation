@@ -182,7 +182,12 @@ func (idx *eagleHashIndex) listItems() ([]eagleListItem, error) {
 		values := url.Values{}
 		values.Set("limit", fmt.Sprint(limit))
 		values.Set("offset", fmt.Sprint(offset))
-		values.Set("fields", "id,name,ext,filePath,isDeleted")
+		// Do not send "fields": on the user's Eagle build, any fields
+		// parameter (even a single valid field such as "id") makes
+		// /api/v2/item/get return 500, while omitting it returns 200.
+		// Verified 2026-11-14 against the real Eagle instance.
+		// The full item objects still carry id/name/ext/isDeleted,
+		// and filePath is reconstructed by resolveEagleOriginal.
 		var page struct {
 			Items []eagleListItem `json:"data"`
 			Total int             `json:"total"`
